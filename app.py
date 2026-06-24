@@ -20,10 +20,11 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 BINANCE_FAPI = "https://fapi.binance.com"
 # Binance API 备选镜像（自动 fallback）
-BINANCE_MIRRORS = [
-    "https://fapi.binance.com",
-    "https://api.binance.com/fapi",
-    "https://fapi.binance.me",       # 部分 CN 用户可用
+# futures → spot → CN 镜像，路径自动适配
+BINANCE_FALLBACKS = [
+    {"base": "https://fapi.binance.com", "prefix": "/fapi/v1"},   # 期货 API
+    {"base": "https://api.binance.com",  "prefix": "/api/v3"},    # 现货 API（通常不被封）
+    {"base": "https://fapi.binance.me",  "prefix": "/fapi/v1"},   # CN 期货镜像
 ]
 CMC_BASE = "https://pro-api.coinmarketcap.com/v1"
 CMC_API_KEY = "7b857f20da3b4a2ea1194ec94646fa68"
@@ -43,28 +44,34 @@ STARS_MAP = {5: "⭐⭐⭐⭐⭐", 4: "⭐⭐⭐⭐", 3: "⭐⭐⭐", 2: "⭐⭐
 # 1. Binance 数据
 # ══════════════════════════════════════════════
 
-def _binance_request(path, proxies=None):
-    """依次尝试所有镜像 URL，返回第一个成功的响应 JSON。"""
+def _binance_request(api_path, proxies=None):
+    """依次尝试所有 fallback 镜像，返回第一个成功的响应 JSON。
+    api_path = fapi/v1/xxx 格式（不含前导斜杠）
+    """
     last_err = None
-    for base in BINANCE_MIRRORS:
-        url = f"{base}{path}"
+    for fb in BINANCE_FALLBACKS:
+        url = f"{fb['base']}/{fb['prefix']}/{api_path}"
         try:
             r = requests.get(url, timeout=REQUEST_TIMEOUT, proxies=proxies)
             if r.status_code == 451:
-                last_err = f"{base} 返回 451（区域封锁）"
+                last_err = f"{fb['base']} 返回 451（区域封锁）"
                 continue
             r.raise_for_status()
             return r.json()
         except requests.exceptions.ConnectTimeout:
-            last_err = f"{base} 连接超时"
+            last_err = f"{fb['base']} 连接超时"
             continue
         except requests.exceptions.ConnectionError:
-            last_err = f"{base} 连接被拒绝"
+            last_err = f"{fb['base']} 连接被拒绝"
             continue
         except Exception as e:
-            last_err = f"{base}: {e}"
+            last_err = f"{fb['base']}: {e}"
             continue
-    raise RuntimeError(f"Binance API 所有镜像均不可用: {last_err}")
+    raise RuntimeError(
+        f"Binance API 所有镜像均不可用。\n"
+        f"最后错误: {last_err}\n"
+        f"💡 如果在中国大陆，请在侧栏「代理设置」中填入你的代理地址"
+    )
 
 
 @st.cache_data(ttl=120, show_spinner="📡 连接 Binance Futures ...")
@@ -72,15 +79,15 @@ def fetch_binance_data():
     """获取 USDT 永续合约列表 + 24hr ticker。"""
     proxies = {"https": PROXY, "http": PROXY} if PROXY else None
     try:
-        # 交易对列表
-        info = _binance_request("/fapi/v1/exchangeInfo", proxies)
+        # 交易对列表（期货用 exchangeInfo，现货用 exchangeInfo，格式一致）
+        info = _binance_request("exchangeInfo", proxies)
         symbols = [
             s["symbol"] for s in info["symbols"]
             if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
         ]
 
         # 24hr ticker（一次性返回全部）
-        ticker_raw = _binance_request("/fapi/v1/ticker/24hr", proxies)
+        ticker_raw = _binance_request("ticker/24hr", proxies)
         ticker = {t["symbol"]: t for t in ticker_raw}
 
         rows = []
@@ -545,18 +552,28 @@ with st.sidebar:
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ── 代理配置（折叠） ──
-    with st.expander("🌐 代理设置（Binance 被封时使用）", expanded=False):
+    with st.expander("🌐 代理设置（Binance 被封时使用）", expanded=True):
+        st.markdown(
+            "<div style='font-size:0.8rem;color:#dc2626;margin-bottom:8px;'>"
+            "⚠️ Binance API 返回 451 区域封锁。如果开了代理/VPN，请把地址填下面：</div>",
+            unsafe_allow_html=True,
+        )
         proxy_input = st.text_input(
-            "HTTP/HTTPS 代理",
+            "HTTP/HTTPS 代理地址",
             value=PROXY or "",
             placeholder="例如 http://127.0.0.1:7890",
             label_visibility="visible",
-            help="如果 Binance API 返回 451 错误，填你的代理地址（Shadowsocks/V2Ray 等）",
+            help="填你的本地代理地址（Shadowsocks/V2Ray/Clash 等）",
         )
-        if proxy_input != (PROXY or ""):
+        prod_hint = ""
+        if st.secrets.get("BINANCE_PROXY"):
+            prod_hint = "✅ Streamlit Cloud Secrets 已配置 BINANCE_PROXY"
+        elif proxy_input:
             st.session_state["user_proxy"] = proxy_input
-            st.caption("✅ 已保存，点击下方刷新按钮生效")
-        st.caption("也可以在 Streamlit Cloud Secrets 中设置 BINANCE_PROXY 环境变量")
+            prod_hint = "✅ 代理已保存，点击「强制刷新数据」生效"
+        else:
+            prod_hint = "💡 也可以在 Streamlit Cloud → Settings → Secrets 中设置 BINANCE_PROXY 环境变量"
+        st.caption(prod_hint)
 
     # ── 底部操作 ──
     st.markdown("""
