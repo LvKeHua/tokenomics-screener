@@ -19,9 +19,22 @@ from datetime import datetime
 # 配置
 # ─────────────────────────────────────────────
 BINANCE_FAPI = "https://fapi.binance.com"
+# Binance API 备选镜像（自动 fallback）
+BINANCE_MIRRORS = [
+    "https://fapi.binance.com",
+    "https://api.binance.com/fapi",
+    "https://fapi.binance.me",       # 部分 CN 用户可用
+]
 CMC_BASE = "https://pro-api.coinmarketcap.com/v1"
 CMC_API_KEY = "7b857f20da3b4a2ea1194ec94646fa68"
 REQUEST_TIMEOUT = 15
+
+# 代理配置（优先从 Session State > Streamlit Secrets > 环境变量）
+import os
+_PROXY_FROM_ENV = (
+    st.secrets.get("BINANCE_PROXY") if hasattr(st, "secrets") else None
+) or os.environ.get("BINANCE_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
+PROXY = st.session_state.get("user_proxy") or _PROXY_FROM_ENV
 
 STARS_MAP = {5: "⭐⭐⭐⭐⭐", 4: "⭐⭐⭐⭐", 3: "⭐⭐⭐", 2: "⭐⭐", 1: "⭐", 0: "—"}
 
@@ -30,22 +43,45 @@ STARS_MAP = {5: "⭐⭐⭐⭐⭐", 4: "⭐⭐⭐⭐", 3: "⭐⭐⭐", 2: "⭐⭐
 # 1. Binance 数据
 # ══════════════════════════════════════════════
 
+def _binance_request(path, proxies=None):
+    """依次尝试所有镜像 URL，返回第一个成功的响应 JSON。"""
+    last_err = None
+    for base in BINANCE_MIRRORS:
+        url = f"{base}{path}"
+        try:
+            r = requests.get(url, timeout=REQUEST_TIMEOUT, proxies=proxies)
+            if r.status_code == 451:
+                last_err = f"{base} 返回 451（区域封锁）"
+                continue
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.ConnectTimeout:
+            last_err = f"{base} 连接超时"
+            continue
+        except requests.exceptions.ConnectionError:
+            last_err = f"{base} 连接被拒绝"
+            continue
+        except Exception as e:
+            last_err = f"{base}: {e}"
+            continue
+    raise RuntimeError(f"Binance API 所有镜像均不可用: {last_err}")
+
+
 @st.cache_data(ttl=120, show_spinner="📡 连接 Binance Futures ...")
 def fetch_binance_data():
     """获取 USDT 永续合约列表 + 24hr ticker。"""
+    proxies = {"https": PROXY, "http": PROXY} if PROXY else None
     try:
         # 交易对列表
-        r = requests.get(f"{BINANCE_FAPI}/fapi/v1/exchangeInfo", timeout=REQUEST_TIMEOUT)
-        r.raise_for_status()
+        info = _binance_request("/fapi/v1/exchangeInfo", proxies)
         symbols = [
-            s["symbol"] for s in r.json()["symbols"]
+            s["symbol"] for s in info["symbols"]
             if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
         ]
 
         # 24hr ticker（一次性返回全部）
-        r2 = requests.get(f"{BINANCE_FAPI}/fapi/v1/ticker/24hr", timeout=REQUEST_TIMEOUT)
-        r2.raise_for_status()
-        ticker = {t["symbol"]: t for t in r2.json()}
+        ticker_raw = _binance_request("/fapi/v1/ticker/24hr", proxies)
+        ticker = {t["symbol"]: t for t in ticker_raw}
 
         rows = []
         for sym in symbols:
@@ -507,6 +543,20 @@ with st.sidebar:
     min_amp = st.slider("最低 24h 振幅 (%)", 0.0, 100.0, 0.0, 1.0)
     min_r7 = st.slider("最低 7日涨幅 (%)", -100.0, 500.0, -100.0, 5.0)
     st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── 代理配置（折叠） ──
+    with st.expander("🌐 代理设置（Binance 被封时使用）", expanded=False):
+        proxy_input = st.text_input(
+            "HTTP/HTTPS 代理",
+            value=PROXY or "",
+            placeholder="例如 http://127.0.0.1:7890",
+            label_visibility="visible",
+            help="如果 Binance API 返回 451 错误，填你的代理地址（Shadowsocks/V2Ray 等）",
+        )
+        if proxy_input != (PROXY or ""):
+            st.session_state["user_proxy"] = proxy_input
+            st.caption("✅ 已保存，点击下方刷新按钮生效")
+        st.caption("也可以在 Streamlit Cloud Secrets 中设置 BINANCE_PROXY 环境变量")
 
     # ── 底部操作 ──
     st.markdown("""
