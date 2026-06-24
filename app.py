@@ -161,6 +161,67 @@ def _mock_binance_data():
 
 
 # ══════════════════════════════════════════════
+# 1b. Bybit 备选数据源（Binance 被封时自动切换）
+# ══════════════════════════════════════════════
+
+BYBIT_API = "https://api.bybit.com"
+
+@st.cache_data(ttl=120, show_spinner="📡 连接 Bybit ...")
+def fetch_bybit_data():
+    """通过 Bybit V5 API 获取 USDT 永续合约 24hr 行情。"""
+    proxies = {"https": PROXY, "http": PROXY} if PROXY else None
+    try:
+        # 交易对列表
+        r = requests.get(
+            f"{BYBIT_API}/v5/market/instruments-info",
+            params={"category": "linear"},
+            timeout=REQUEST_TIMEOUT, proxies=proxies,
+        )
+        r.raise_for_status()
+        symbols = [
+            s["symbol"] for s in r.json()["result"]["list"]
+            if s.get("contractStatus") == "Trading"
+               and s.get("quoteCoin") == "USDT"
+               and s.get("contractType") == "LinearPerpetual"
+        ]
+
+        # 24hr ticker
+        r2 = requests.get(
+            f"{BYBIT_API}/v5/market/tickers",
+            params={"category": "linear"},
+            timeout=REQUEST_TIMEOUT, proxies=proxies,
+        )
+        r2.raise_for_status()
+        ticker_list = r2.json()["result"]["list"]
+        ticker = {t["symbol"]: t for t in ticker_list}
+
+        rows = []
+        for sym in symbols:
+            t = ticker.get(sym)
+            if not t:
+                continue
+            price = float(t["lastPrice"])
+            high = float(t["highPrice24h"])
+            low = float(t["lowPrice24h"])
+            # price24hPcnt 是小数（如 0.025 = 2.5%），转成百分比
+            pcnt = float(t.get("price24hPcnt", 0)) * 100
+            rows.append({
+                "symbol": sym,
+                "base_asset": sym.replace("USDT", ""),
+                "price": price,
+                "change_24h_pct": round(pcnt, 2),
+                "amplitude_24h_pct": round((high - low) / price * 100, 2) if price > 0 else 0,
+                "volume_24h_usdt": float(t.get("turnover24h", 0)),
+                "high_24h": high,
+                "low_24h": low,
+            })
+        return pd.DataFrame(rows)
+
+    except Exception as e:
+        raise RuntimeError(f"Bybit API 也失败: {e}")
+
+
+# ══════════════════════════════════════════════
 # 2. CoinMarketCap 代币经济学
 # ══════════════════════════════════════════════
 
@@ -500,10 +561,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── 顶栏 ──
-st.markdown("""
+st.markdown(f"""
 <div class="app-header">
     <h1>🔬 筹码真空 · 代币筛选器</h1>
-    <p>小资金百倍潜力挖掘 — 低流通 / 全流通小市值 — 数据源: Binance Futures + CoinMarketCap</p>
+    <p>小资金百倍潜力挖掘 — 低流通 / 全流通小市值 — 数据源: {data_source} + CoinMarketCap</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -588,17 +649,27 @@ with st.sidebar:
 
 # ── 加载数据 ──
 with st.spinner("正在加载数据（首次约 20-40 秒）..."):
-    binance_df = fetch_binance_data()
-    if binance_df.empty:
+    market_df = fetch_binance_data()
+    data_source = "Binance Futures"
+    if market_df.empty or len(market_df) < 10:
+        st.warning("⚠️ Binance 不可用，尝试 Bybit ...")
+        try:
+            market_df = fetch_bybit_data()
+            data_source = "Bybit"
+        except Exception as e2:
+            st.warning(f"⚠️ Bybit 也失败: {e2}，使用模拟数据。")
+            market_df = _mock_binance_data()
+            data_source = "模拟数据"
+    if market_df.empty:
         st.error("❌ 无法获取数据，请检查网络。")
         st.stop()
 
     cmc_raw = fetch_cmc_data()
     if cmc_raw is None:
-        cmc_raw = _mock_cmc_data(binance_df)
+        cmc_raw = _mock_cmc_data(market_df)
         st.info("ℹ️ CMC 不可用，已切换至模拟数据。")
 
-    df = merge_data(binance_df, cmc_raw)
+    df = merge_data(market_df, cmc_raw)
 
 # ── Preset 按钮 ──
 st.markdown("""
@@ -669,7 +740,7 @@ st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 st.markdown("""
 <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:16px 20px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
     <span style="font-weight:600;color:#111827;font-size:1rem;">📋 筛选结果</span>
-    <span style="color:#6b7280;font-size:0.8rem;margin-left:10px;">点击表头排序 · 绿色行=主力介入信号</span>
+    <span style="color:#6b7280;font-size:0.8rem;margin-left:10px;">点击表头排序 · 绿色行=主力介入信号 · 数据源: {data_source}</span>
 </div>
 """, unsafe_allow_html=True)
 
