@@ -105,13 +105,14 @@ async function fetchOkx() {
       const price = parseFloat(t.last);
       const high = parseFloat(t.high24h);
       const low = parseFloat(t.low24h);
+      const open24h = parseFloat(t.open24h);
       if (isNaN(price) || price <= 0) continue;
       const ba = t.instId.replace('-USDT-SWAP', '');
       rows.push({
         symbol: ba + 'USDT',
         base_asset: ba,
         price,
-        change_24h_pct: Math.round(parseFloat(t.change24h || '0') * 100 * 100) / 100,
+        change_24h_pct: (open24h && open24h > 0) ? Math.round(((price - open24h) / open24h) * 100 * 100) / 100 : 0,
         amplitude_24h_pct: (high && low && high > 0 && low > 0)
           ? Math.round(((high - low) / price) * 100 * 100) / 100
           : 0,
