@@ -287,7 +287,8 @@ async function relayDemon(binanceRows) {
 }
 
 // ─── 小币筛选: Binance 资金费率 / 盘口深度 / 上线时间 ──────────
-const DEPTH_CONCURRENCY = 6;
+const DEPTH_CONCURRENCY = 4;
+const DEPTH_DELAY_MS = 150; // 每次请求后延迟 150ms，limit=5 权重=2，679币×2权重/4并发 ≈ 26秒，总 1358权重
 const MENTIONED_DEFAULT = 'SIREN,RAVE,STO,LAB,TRADOOR,BSB,ESPORTS,BANK,IDOL,UB,BILL,RIVER,PTB,ACE,SAHARA,VELVET,ALLO,BLUAI,AGT,NOM,PIPPIN,WLFI,RESOLV,USR,INX';
 const MENTIONED = (process.env.MENTIONED_COINS || MENTIONED_DEFAULT).split(',').map(s => s.trim()).filter(Boolean);
 
@@ -320,13 +321,15 @@ async function fetchOrderbookDepths(symbols) {
       while (attempt < 2) {
         attempt++;
         try {
-          const d = await fetchWithTimeout(`https://fapi.binance.com/fapi/v1/depth?symbol=${sym}&limit=20`);
+          const d = await fetchWithTimeout(`https://fapi.binance.com/fapi/v1/depth?symbol=${sym}&limit=5`);
           let total = 0;
           if (d && Array.isArray(d.bids) && Array.isArray(d.asks)) {
             for (const [p, q] of d.bids) total += parseFloat(p) * parseFloat(q);
             for (const [p, q] of d.asks) total += parseFloat(p) * parseFloat(q);
           }
           if (!isNaN(total) && total > 0) results.set(sym, Math.round(total * 100) / 100);
+          // 限速：limit=5 权重=2，4并发×2权重÷0.15s ≈ 53权重/秒 ≈ 3180权重/分钟，安全
+          await new Promise(r => setTimeout(r, DEPTH_DELAY_MS));
           break;
         } catch (e) {
           if (attempt < 2) await new Promise(r => setTimeout(r, 250));
@@ -335,7 +338,7 @@ async function fetchOrderbookDepths(symbols) {
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(DEPTH_CONCURRENCY, symbols.length) }, worker));
+  await Promise.all(Array.from({ length: DEPTH_CONCURRENCY }, worker));
   return results;
 }
 
@@ -395,12 +398,10 @@ async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listing
   if (candidates.length === 0) { console.log('Coinfilter: no candidates, skip'); return; }
 
   const syms = candidates.map(r => r.symbol);
-  console.log(`Coinfilter: fetching OI/funding/depth/listing for ${syms.length} symbols...`);
   oiMap = oiMap || await fetchOpenInterest(syms);
   fundingMap = fundingMap || await fetchFundingRates(syms);
-  // depth 全量会触发 Binance 限流封禁 (HTTP 418) — 只抓成交量 Top 100 的盘口
-  const depthSyms = syms.slice(0, 100);
-  depthMap = depthMap || await fetchOrderbookDepths(depthSyms);
+  // depth: 全量抓取，4并发+150ms限速，约85秒完成679币
+  depthMap = depthMap || await fetchOrderbookDepths(syms);
   listingMap = listingMap || await fetchListingDates();
   console.log(`Coinfilter: got OI=${oiMap.size} funding=${fundingMap.size} depth=${depthMap.size} listing=${listingMap.size}`);
 
