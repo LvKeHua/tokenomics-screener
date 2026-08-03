@@ -259,6 +259,9 @@ async function relayDemon(binanceRows) {
       amplitude_24h_pct: r.amplitude_24h_pct,
       volume_24h_usdt: r.volume_24h_usdt,
       trade_count: r.trade_count || 0,
+      oi_value: Math.round(oiValue * 100) / 100,
+      oi_contracts: oi,
+      volume_oi_ratio: oiValue > 0 ? Math.round((r.volume_24h_usdt / oiValue) * 10000) / 10000 : 0,
       oi_stage: stage.stage,
       oi_stage_label: stage.label,
     });
@@ -362,10 +365,10 @@ async function fetchListingDates() {
 
 function computeOiStage(oiValue) {
   if (oiValue < 2000000) return { stage: 'accumulation', label: '蓄水期' };
-  if (oiValue <= 8000000) return { stage: 'small_cap', label: '小币候选' };
-  if (oiValue <= 30000000) return { stage: 'early_pump', label: '拉升早期' };
+  if (oiValue <= 8000000) return { stage: 'early_pump', label: '小币候选' };
+  if (oiValue <= 30000000) return { stage: 'pump', label: '拉升早期' };
   if (oiValue <= 80000000) return { stage: 'mid', label: '中期' };
-  return { stage: 'distribution', label: '大后期' };
+  return { stage: 'late_distribution', label: '大后期' };
 }
 
 function computeCoinfilterTags(r, oiValue, volumeOiRatio, fundingRatePct, depthUsdt, listing) {
