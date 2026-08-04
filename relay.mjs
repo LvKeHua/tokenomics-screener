@@ -290,6 +290,165 @@ async function relayDemon(binanceRows) {
 const DEPTH_CONCURRENCY = 4;
 const DEPTH_DELAY_MS = 150; // 每次请求后延迟 150ms，limit=5 权重=2，679币×2权重/4并发 ≈ 26秒，总 1358权重
 const MENTIONED_DEFAULT = 'SIREN,RAVE,STO,LAB,TRADOOR,BSB,ESPORTS,BANK,IDOL,UB,BILL,RIVER,PTB,ACE,SAHARA,VELVET,ALLO,BLUAI,AGT,NOM,PIPPIN,WLFI,RESOLV,USR,INX';
+
+// ─── Coinalyze 补充数据: 多空比 / 清算 / OI历史 / 预测资费 ──────────
+// 限流 40次/分钟。只对候选币查询（每次最多20个symbol），分2批错峰
+const COINALYZE_KEY = process.env.COINALYZE_API_KEY || '';
+const COINALYZE_BASE = 'https://api.coinalyze.net/v1';
+const COINALYZE_MAX_SYMS = 20;       // 每次请求最多20个symbol
+const COINALYZE_BATCH_DELAY = 1200;  // 批间延迟，避免40次/分钟限流
+const COINALYZE_ENABLED = !!COINALYZE_KEY;
+
+// Coinalyze 交易所代码映射 (A=Binance, 6=Bybit, Y=Gate, 3=OKX, 4=Huobi, H=Hyperliquid)
+const COINALYZE_EXCHANGES = { 'binance': 'A', 'bybit': '6', 'okx': '3', 'gate': 'Y', 'huobi': '4', 'hyperliquid': 'H' };
+
+// 从 Binance symbol (如 VANRYUSDT) 转 Coinalyze symbol (如 VANRYUSDT_PERP.A)
+function coinalyzeSymbol(binanceSymbol) {
+  return binanceSymbol + '_PERP.A'; // 我们只用 Binance 永续，映射到 Coinalyze Binance 代码
+}
+
+// 通用 Coinalyze GET（限流按 symbol 数计：40 symbols/min，不是请求数）
+let coinalyzeSymbolTimestamps = []; // 每次调用的 symbol 数时间戳，用于滚动窗口
+async function coinalyzeFetch(path, params = {}, symbolCount = 20) {
+  if (!COINALYZE_ENABLED) return null;
+  // 滚动窗口限流：移除60s前的记录，若剩余+本次超过38则等待
+  const nowMs = Date.now();
+  coinalyzeSymbolTimestamps = coinalyzeSymbolTimestamps.filter(t => nowMs - t < 60000);
+  const used = coinalyzeSymbolTimestamps.length;
+  if (used + symbolCount > 38) {
+    const waitMs = 60000 - (nowMs - (coinalyzeSymbolTimestamps[0] || nowMs));
+    if (process.env.DEBUG) console.log(`Coinalyze rate-limit: used ${used}/38, waiting ${Math.ceil(waitMs/1000)}s...`);
+    await new Promise(r => setTimeout(r, Math.max(waitMs, 3000)));
+    coinalyzeSymbolTimestamps = coinalyzeSymbolTimestamps.filter(t => Date.now() - t < 60000);
+  }
+  const qs = new URLSearchParams({ api_key: COINALYZE_KEY, ...params });
+  try {
+    const res = await fetchWithTimeout(`${COINALYZE_BASE}${path}?${qs}`);
+    // 成功后记录本次消耗的 symbol 数
+    for (let i = 0; i < symbolCount; i++) coinalyzeSymbolTimestamps.push(Date.now());
+    return res;
+  } catch (e) {
+    // 429 限流：等 30s 后重试一次
+    if (e.message && e.message.includes('429')) {
+      if (process.env.DEBUG) console.log(`Coinalyze 429, waiting 30s...`);
+      await new Promise(r => setTimeout(r, 30000));
+      const res = await fetchWithTimeout(`${COINALYZE_BASE}${path}?${qs}`);
+      for (let i = 0; i < symbolCount; i++) coinalyzeSymbolTimestamps.push(Date.now());
+      return res;
+    }
+    throw e;
+  }
+}
+
+// 批量查询多空比（一次最多20个symbol，返回 Map<binanceSym, {ratio, long_pct, short_pct}>）
+async function fetchCoinalyzeLongShort(binanceSymbols) {
+  const result = new Map();
+  if (!COINALYZE_ENABLED || binanceSymbols.length === 0) return result;
+  const cySyms = binanceSymbols.map(coinalyzeSymbol);
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (let i = 0; i < cySyms.length; i += COINALYZE_MAX_SYMS) {
+    const batch = cySyms.slice(i, i + COINALYZE_MAX_SYMS).join(',');
+    try {
+      const d = await coinalyzeFetch('/long-short-ratio-history', {
+        symbols: batch, interval: '1hour',
+        from: nowSec - 7200, to: nowSec, limit: '1',
+      });
+      if (Array.isArray(d)) {
+        for (const row of d) {
+          // Coinalyze symbol (VANRYUSDT_PERP.A) → Binance symbol (VANRYUSDT)
+          const sym = (row.symbol || '').replace(/_PERP\..*$/, '');
+          const hist = (row.history || []);
+          const last = hist[hist.length - 1];
+          if (last) {
+            result.set(sym, {
+              ratio: Math.round(last.r * 10000) / 10000,
+              long_pct: last.l != null ? Math.round(last.l * 100) / 100 : null,
+              short_pct: last.s != null ? Math.round(last.s * 100) / 100 : null,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      if (process.env.DEBUG) console.log(`Coinalyze LSR batch ${i}: FAILED ${e.message}`);
+    }
+    if (i + COINALYZE_MAX_SYMS < cySyms.length) await new Promise(r => setTimeout(r, COINALYZE_BATCH_DELAY));
+  }
+  return result;
+}
+
+// 批量查询清算历史（返回 Map<binanceSym, {long_liq, short_liq, total}>，近24h累计）
+async function fetchCoinalyzeLiquidations(binanceSymbols) {
+  const result = new Map();
+  if (!COINALYZE_ENABLED || binanceSymbols.length === 0) return result;
+  const cySyms = binanceSymbols.map(coinalyzeSymbol);
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (let i = 0; i < cySyms.length; i += COINALYZE_MAX_SYMS) {
+    const batch = cySyms.slice(i, i + COINALYZE_MAX_SYMS).join(',');
+    try {
+      const d = await coinalyzeFetch('/liquidation-history', {
+        symbols: batch, interval: '1hour',
+        from: nowSec - 86400, to: nowSec, limit: '24',
+      });
+      if (Array.isArray(d)) {
+        for (const row of d) {
+          const sym = (row.symbol || '').replace(/_PERP\..*$/, '');
+          let longLiq = 0, shortLiq = 0;
+          for (const h of (row.history || [])) {
+            longLiq += (h.l || 0);
+            shortLiq += (h.s || 0);
+          }
+          if (longLiq > 0 || shortLiq > 0) {
+            result.set(sym, {
+              long_liq_usdt: Math.round(longLiq),
+              short_liq_usdt: Math.round(shortLiq),
+              total_liq_usdt: Math.round(longLiq + shortLiq),
+            });
+          }
+        }
+      }
+    } catch (e) {
+      if (process.env.DEBUG) console.log(`Coinalyze Liq batch ${i}: FAILED ${e.message}`);
+    }
+    if (i + COINALYZE_MAX_SYMS < cySyms.length) await new Promise(r => setTimeout(r, COINALYZE_BATCH_DELAY));
+  }
+  return result;
+}
+
+// 批量查询 OI 历史趋势（近24h OI 变化方向）→ 判断吸筹/派发
+async function fetchCoinalyzeOiTrend(binanceSymbols) {
+  const result = new Map();
+  if (!COINALYZE_ENABLED || binanceSymbols.length === 0) return result;
+  const cySyms = binanceSymbols.map(coinalyzeSymbol);
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (let i = 0; i < cySyms.length; i += COINALYZE_MAX_SYMS) {
+    const batch = cySyms.slice(i, i + COINALYZE_MAX_SYMS).join(',');
+    try {
+      const d = await coinalyzeFetch('/open-interest-history', {
+        symbols: batch, interval: '1hour',
+        from: nowSec - 86400, to: nowSec, limit: '24',
+      });
+      if (Array.isArray(d)) {
+        for (const row of d) {
+          const sym = (row.symbol || '').replace(/_PERP\..*$/, '');
+          const hist = (row.history || []);
+          if (hist.length >= 2) {
+            const first = hist[0], last = hist[hist.length - 1];
+            const changePct = first.c > 0 ? ((last.c - first.c) / first.c) * 100 : 0;
+            result.set(sym, {
+              oi_24h_change_pct: Math.round(changePct * 100) / 100,
+              oi_start: Math.round(first.c),
+              oi_end: Math.round(last.c),
+            });
+          }
+        }
+      }
+    } catch (e) {
+      if (process.env.DEBUG) console.log(`Coinalyze OIH batch ${i}: FAILED ${e.message}`);
+    }
+    if (i + COINALYZE_MAX_SYMS < cySyms.length) await new Promise(r => setTimeout(r, COINALYZE_BATCH_DELAY));
+  }
+  return result;
+}
 const MENTIONED = (process.env.MENTIONED_COINS || MENTIONED_DEFAULT).split(',').map(s => s.trim()).filter(Boolean);
 
 async function fetchFundingRates(symbols) {
@@ -346,22 +505,27 @@ let LISTING_INFO_CACHE = null;
 
 async function fetchListingDates() {
   if (!LISTING_INFO_CACHE) {
-    const d = await fetchWithTimeout('https://fapi.binance.com/fapi/v1/exchangeInfo');
-    const map = new Map();
-    if (d && Array.isArray(d.symbols)) {
-      for (const s of d.symbols) {
-        if (!s.onboardDate) continue;
-        const listingMs = parseInt(s.onboardDate, 10);
-        if (isNaN(listingMs)) continue;
-        const listingDate = new Date(listingMs);
-        const daysSinceListing = Math.floor((Date.now() - listingMs) / 86400000);
-        map.set(s.symbol, {
-          listing_date: listingDate.toISOString().slice(0, 10),
-          days_since_listing: daysSinceListing,
-        });
+    try {
+      const d = await fetchWithTimeout('https://fapi.binance.com/fapi/v1/exchangeInfo');
+      const map = new Map();
+      if (d && Array.isArray(d.symbols)) {
+        for (const s of d.symbols) {
+          if (!s.onboardDate) continue;
+          const listingMs = parseInt(s.onboardDate, 10);
+          if (isNaN(listingMs)) continue;
+          const listingDate = new Date(listingMs);
+          const daysSinceListing = Math.floor((Date.now() - listingMs) / 86400000);
+          map.set(s.symbol, {
+            listing_date: listingDate.toISOString().slice(0, 10),
+            days_since_listing: daysSinceListing,
+          });
+        }
       }
+      LISTING_INFO_CACHE = map;
+    } catch (e) {
+      if (process.env.DEBUG) console.log(`ListingDates: FAILED ${e.message}`);
+      LISTING_INFO_CACHE = new Map(); // 空缓存，避免反复重试
     }
-    LISTING_INFO_CACHE = map;
   }
   return LISTING_INFO_CACHE;
 }
@@ -406,6 +570,33 @@ async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listing
   console.log(`Coinfilter: got OI=${oiMap.size} funding=${fundingMap.size} depth=${depthMap.size} listing=${listingMap.size}`);
 
   const payload = [];
+  // Coinalyze 补充数据：只对候选币查询（小币区间+有换手+他提过的），串行调用避免 40次/分钟 限流
+  let lsrMap = new Map(), liqMap = new Map(), oiTrendMap = new Map(), pfrMap = new Map();
+  if (COINALYZE_ENABLED) {
+    // 候选条件：OI 2M-80M（排除大币/僵尸）且 vol/OI≥3x（有换手），或他提过的币（无论状态都关注）
+    // 薄盘口不列为候选条件（小币普遍薄，93%都是<200K），只作为标签显示
+    const cyCandidates = sorted.filter(r => {
+      const oi = oiMap.get(r.symbol);
+      if (oi == null) return false;
+      const oiValue = oi * r.price;
+      const ratio = oiValue > 0 ? r.volume_24h_usdt / oiValue : 0;
+      const inRange = oiValue >= 2000000 && oiValue <= 80000000;
+      const hasTurnover = ratio >= 3;
+      const mentioned = MENTIONED.includes(r.base_asset);
+      return (inRange && hasTurnover) || mentioned;
+    }).map(r => r.symbol);
+    // 上限 20 个：20×3端点(LSR/Liq/OI-trend) = 60 symbol-calls，滚动窗口 38/min 约1.6分钟，适配5分钟周期
+    // 预测资费(PFR)价值低，不查，省限流预算
+    const cySyms = cyCandidates.slice(0, 20);
+    if (cySyms.length > 0) {
+      console.log(`Coinalyze: fetching for ${cySyms.length} candidates (LSR/liq/OI-trend)...`);
+      // 串行执行，滚动窗口按 symbol 数限流（40 symbols/min）
+      lsrMap = await fetchCoinalyzeLongShort(cySyms);
+      liqMap = await fetchCoinalyzeLiquidations(cySyms);
+      oiTrendMap = await fetchCoinalyzeOiTrend(cySyms);
+      console.log(`Coinalyze: got LSR=${lsrMap.size} Liq=${liqMap.size} OI-trend=${oiTrendMap.size}`);
+    }
+  }
   for (const r of sorted) {
     const oi = oiMap.get(r.symbol);
     if (oi == null) continue;
@@ -433,6 +624,15 @@ async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listing
       oi_stage: stage.stage,
       oi_stage_label: stage.label,
       tags,
+      // Coinalyze 补充字段（无数据则为 null）
+      long_short_ratio: lsrMap.get(r.symbol) ? lsrMap.get(r.symbol).ratio : null,
+      long_pct: lsrMap.get(r.symbol) ? lsrMap.get(r.symbol).long_pct : null,
+      short_pct: lsrMap.get(r.symbol) ? lsrMap.get(r.symbol).short_pct : null,
+      liq_24h_usdt: liqMap.get(r.symbol) ? liqMap.get(r.symbol).total_liq_usdt : null,
+      liq_long_24h_usdt: liqMap.get(r.symbol) ? liqMap.get(r.symbol).long_liq_usdt : null,
+      liq_short_24h_usdt: liqMap.get(r.symbol) ? liqMap.get(r.symbol).short_liq_usdt : null,
+      oi_24h_change_pct: oiTrendMap.get(r.symbol) ? oiTrendMap.get(r.symbol).oi_24h_change_pct : null,
+      predicted_funding_rate_pct: pfrMap.get(r.symbol) != null ? pfrMap.get(r.symbol) : null,
     });
   }
   if (payload.length === 0) { console.log('Coinfilter: no payload, skip'); return; }

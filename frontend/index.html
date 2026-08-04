@@ -245,7 +245,6 @@ tr.squeeze-row td:first-child::before{content:'';position:absolute;left:0;top:4p
 .demon-note{font-size:.62rem;color:var(--text-muted);margin-top:8px;line-height:1.6}
 </style><style>
 /* ═══ 🪙 小币筛选器 视图样式 ═══ */
-/* ═══ 🪙 小币筛选器 视图样式 ═══ */
 /* 主题与 _demon.css 一致，使用 var(--*) 基础变量，cf- 前缀避免类名冲突 */
 
 /* 第三 Tab 激活态（金色系，区别于蓝/红的其他两 Tab） */
@@ -382,6 +381,26 @@ tr.cf-row-click:hover td{background:rgba(255,255,255,0.035)}
 .cf-scatter-legend-item{display:flex;align-items:center;gap:3px}
 .cf-scatter-legend-item i{width:8px;height:8px;border-radius:50%;display:inline-block}
 .cf-note{font-size:.62rem;color:var(--text-muted);margin-top:8px;line-height:1.6}
+
+/* ── 移动端适配 ── */
+@media(max-width:768px){
+  .cf-scatter-wrap{height:240px}
+  .cf-scatter-plot{left:30px;right:20px}
+  .cf-scatter-tick-y{font-size:.48rem}
+  .cf-scatter-tick-x{font-size:.48rem}
+  .cf-scatter-legend{font-size:.48rem;gap:4px}
+}
+
+/* ── Coinalyze 补充列样式：多空比 / 清算 / OI趋势 / 预测资费 ── */
+.cf-lsr{font-variant-numeric:tabular-nums;white-space:nowrap}
+.cf-lsr-high{color:#f87171;font-weight:700}   /* 多空比>2 = 多头拥挤 */
+.cf-lsr-low{color:#34d399;font-weight:700}    /* 多空比<0.5 = 空头拥挤(挤压燃料) */
+.cf-liq{color:#fbbf24;font-variant-numeric:tabular-nums}
+.cf-oit{font-variant-numeric:tabular-nums;white-space:nowrap}
+.cf-oit-up{color:#34d399}
+.cf-oit-down{color:#f87171}
+.cf-detail-meta{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.08)}
+
 </style>
 </head><body>
 <div id="tabbar"><button class="tab-btn tab-chip active" onclick="switchTab('chip')">🧲 筹码筛选</button><button class="tab-btn tab-demon" onclick="switchTab('demon')">👺 妖币扫描</button><button class="tab-btn tab-coinfilter" onclick="switchTab('coinfilter')">🪙 小币筛选</button></div>
@@ -850,6 +869,7 @@ function demonReload() {
 </script><script>
 // ═══════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // 🪙 小币筛选器 视图（基于 @derrrrrrrq 方法论：小币OI区间 + 换手 + 盘口深度）
 // 数据: GET /api/coinfilter（币安合约 资费率/盘口深度/上线日期）
 //       降级: GET /api/demon（妖币中继数据，无资费/深度/上线日期则显示 N/A）
@@ -1047,6 +1067,9 @@ function cfSortKeyVal(r, k) {
   if (k === 'chg') return r.change_24h_pct || 0;
   if (k === 'vol') return r.volume_24h_usdt || 0;
   if (k === 'depth') return r.orderbook_depth_usdt || 0;
+  if (k === 'lsr') return r.long_short_ratio || 0;
+  if (k === 'liq') return r.liq_24h_usdt || 0;
+  if (k === 'oit') return r.oi_24h_change_pct || 0;
   if (k === 'sym') return r.base_asset || r.symbol || '';
   return r.volume_oi_ratio || 0;
 }
@@ -1224,6 +1247,7 @@ function cfChartScatter(list) {
   var yMin = Math.log10(yLo), yMax = Math.log10(yHi);
   var stageColor = { accumulation: '#64748b', early_pump: '#3b82f6', pump: '#10b981', mid: '#f59e0b', late_distribution: '#ef4444' };
   var stageLabel = { accumulation: '⏳蓄水', early_pump: '💎小币', pump: '🚀拉升', mid: '⚡中期', late_distribution: '⛔大后期' };
+  // 刻度: 每轴 5 个对数刻度
   function ticks(lo, hi) {
     var out = [];
     for (var v = lo; v <= hi * 1.001; v *= 10) out.push(v);
@@ -1232,7 +1256,9 @@ function cfChartScatter(list) {
   }
   var xTicks = ticks(xLo, xHi), yTicks = ticks(yLo, yHi);
   var h = '<div class="cf-scatter-wrap">';
+  // 绘图区域（内边距留给刻度标签和轴标题）
   h += '<div class="cf-scatter-plot">';
+  // 网格线 + 刻度标签（相对于 plot 区域）
   xTicks.forEach(function (tv) {
     var pct = (Math.log10(tv) - xMin) / (xMax - xMin) * 100;
     if (pct < 0 || pct > 100) return;
@@ -1245,6 +1271,7 @@ function cfChartScatter(list) {
     h += '<div class="cf-scatter-grid cf-scatter-grid-h" style="top:' + pct + '%"></div>';
     h += '<div class="cf-scatter-tick cf-scatter-tick-y" style="top:' + pct + '%">' + fL(tv) + '</div>';
   });
+  // 气泡点（顶部 40% 的点 tooltip 向下，其余向上）
   var top = pts.slice().sort(function (a, b) { return (b.volume_oi_ratio || 0) - (a.volume_oi_ratio || 0); }).slice(0, 80);
   top.forEach(function (r) {
     var oi = Math.max(r.oi_value, xLo), vol = Math.max(r.volume_24h_usdt, yLo);
@@ -1258,8 +1285,10 @@ function cfChartScatter(list) {
     var tip = e(r.base_asset) + ' | OI ' + fL(r.oi_value) + ' | 24h额 ' + fL(r.volume_24h_usdt) + ' | 额/OI ' + ratio.toFixed(1) + 'x | ' + (r.oi_stage_label || '');
     h += '<div class="cf-scatter-dot" data-sym="' + e(r.symbol) + '" style="left:' + x + '%;top:' + y + '%;width:' + size + 'px;height:' + size + 'px;background:' + color + '"><span class="cf-scatter-tip ' + tipDir + '">' + tip + '</span></div>';
   });
-  h += '</div>';
+  h += '</div>'; // close cf-scatter-plot
+  // 轴标题（在外层 wrap，不受 plot overflow 裁剪）
   h += '<div class="cf-scatter-axis cf-scatter-x">OI值 (对数) →</div><div class="cf-scatter-axis cf-scatter-y">↑ 24h额 (对数)</div>';
+  // 图例（在外层 wrap）
   h += '<div class="cf-scatter-legend">';
   ['accumulation', 'early_pump', 'pump', 'mid', 'late_distribution'].forEach(function (k) {
     h += '<span class="cf-scatter-legend-item"><i style="background:' + stageColor[k] + '"></i>' + stageLabel[k] + '</span>';
@@ -1319,6 +1348,10 @@ function cfDetailMetaHtml(r) {
   h += '<div class="cf-meta-item"><span class="cf-meta-label">24h振幅</span><span>' + (amp != null ? amp.toFixed(1) + '%' : 'N/A') + '</span></div>';
   h += '<div class="cf-meta-item"><span class="cf-meta-label">成交笔数</span><span>' + (tc != null ? (tc >= 1000 ? Math.round(tc / 1000) + 'k' : tc) : 'N/A') + '</span></div>';
   h += '<div class="cf-meta-item"><span class="cf-meta-label">OI阶段</span><span>' + e(r.oi_stage_label) + '</span></div>';
+  if (r.long_short_ratio != null) h += '<div class="cf-meta-item"><span class="cf-meta-label">多空比</span><span>' + r.long_short_ratio.toFixed(2) + (r.long_pct != null ? ' (多头' + r.long_pct.toFixed(0) + '% / 空头' + r.short_pct.toFixed(0) + '%)' : '') + '</span></div>';
+  if (r.liq_24h_usdt != null) h += '<div class="cf-meta-item"><span class="cf-meta-label">24h清算</span><span>' + cfDepth(r.liq_24h_usdt) + ' (多' + cfDepth(r.liq_long_24h_usdt || 0) + ' / 空' + cfDepth(r.liq_short_24h_usdt || 0) + ')</span></div>';
+  if (r.oi_24h_change_pct != null) h += '<div class="cf-meta-item"><span class="cf-meta-label">OI 24h趋势</span><span>' + (r.oi_24h_change_pct > 0 ? '+' : '') + r.oi_24h_change_pct.toFixed(1) + '%</span></div>';
+  if (r.predicted_funding_rate_pct != null) h += '<div class="cf-meta-item"><span class="cf-meta-label">预测资费</span><span>' + r.predicted_funding_rate_pct.toFixed(4) + '%</span></div>';
   h += '</div>';
   return h;
 }
@@ -1349,6 +1382,16 @@ function renderCoinfilter(container) {
       ? '<span class="cf-fund' + (r.funding_rate_pct > 0 ? ' cf-fund-pos' : r.funding_rate_pct < 0 ? ' cf-fund-neg' : '') + '">' + (r.funding_rate_pct > 0 ? '+' : '') + r.funding_rate_pct.toFixed(3) + '%</span>'
       : 'N/A';
     var depth = r.orderbook_depth_usdt != null ? cfDepth(r.orderbook_depth_usdt) : 'N/A';
+    // Coinalyze 补充列：多空比 / 清算 / OI趋势
+    var lsr = r.long_short_ratio != null
+      ? '<span class="cf-lsr' + (r.long_short_ratio > 2 ? ' cf-lsr-high' : r.long_short_ratio < 0.5 ? ' cf-lsr-low' : '') + '">' + r.long_short_ratio.toFixed(2) + ' (' + (r.long_pct != null ? r.long_pct.toFixed(0) : '?') + '/' + (r.short_pct != null ? r.short_pct.toFixed(0) : '?') + ')</span>'
+      : 'N/A';
+    var liq = r.liq_24h_usdt != null && r.liq_24h_usdt > 0
+      ? '<span class="cf-liq">' + cfDepth(r.liq_24h_usdt) + '</span>'
+      : 'N/A';
+    var oiT = r.oi_24h_change_pct != null
+      ? '<span class="cf-oit cf-oit-' + (r.oi_24h_change_pct > 0 ? 'up' : r.oi_24h_change_pct < 0 ? 'down' : '') + '">' + (r.oi_24h_change_pct > 0 ? '+' : '') + r.oi_24h_change_pct.toFixed(1) + '%</span>'
+      : 'N/A';
     var cls = r.tags.squeeze ? ' class="cf-squeeze-row cf-row-click"' : ' class="cf-row-click"';
     rows += '<tr' + cls + ' onclick="cfToggleRow(this)">'
       + '<td class="cf-expand-arrow">▸</td>'
@@ -1360,10 +1403,13 @@ function renderCoinfilter(container) {
       + '<td><b>' + (r.volume_oi_ratio || 0).toFixed(1) + 'x</b></td>'
       + '<td>' + fund + '</td>'
       + '<td>' + depth + '</td>'
+      + '<td>' + lsr + '</td>'
+      + '<td>' + liq + '</td>'
+      + '<td>' + oiT + '</td>'
       + '<td><span class="cf-stage cf-stage-' + e(r.oi_stage) + '">' + e(r.oi_stage_label) + '</span></td>'
       + '<td>' + cfTagHtml(r) + '</td>'
       + '</tr>'
-      + '<tr class="cf-detail-row" style="display:none"><td colspan="11">'
+      + '<tr class="cf-detail-row" style="display:none"><td colspan="14">'
       + cfChecklistHtml(r.base_asset)
       + cfDetailMetaHtml(r)
       + '</td></tr>';
@@ -1386,7 +1432,7 @@ function renderCoinfilter(container) {
   H += '<div class="cf-filter-card"><div class="label">盘口深度 (K$)</div><div class="input-row"><input type="number" id="c-depth-min-i" class="filter-input" value="0" min="0" step="1" onchange="cfApply()"><span class="range-sep">~</span><input type="number" id="c-depth-max-i" class="filter-input" value="999999" min="0" step="1" onchange="cfApply()"></div><div class="input-row"><input type="range" id="c-depth-min" min="0" max="2000" value="0" oninput="cfApply()"><input type="range" id="c-depth-max" min="0" max="2000" value="2000" oninput="cfApply()"></div></div>';
   H += '<div class="cf-filter-card"><div class="label">搜索币种</div><input type="text" id="c-query" class="filter-input" style="width:100%" placeholder="如: BANK" oninput="cfApply()"></div>';
   H += '<div class="cf-filter-card"><div class="label">排序方式</div><div class="cf-sort-row"><select id="c-sort" onchange="cfApply()">'
-    + '<option value="ratio">额/OI比 ↓</option><option value="oi">OI值 ↓</option><option value="chg">24h涨幅 ↓</option><option value="depth">盘口深度 ↑</option></select></div></div>';
+    + '<option value="ratio">额/OI比 ↓</option><option value="oi">OI值 ↓</option><option value="chg">24h涨幅 ↓</option><option value="depth">盘口深度 ↑</option><option value="lsr">多空比 ↓</option><option value="liq">清算 ↓</option><option value="oit">OI趋势 ↓</option></select></div></div>';
   H += '<button class="refresh-btn" onclick="cfReload()">刷新数据</button>';
   H += '<div style="font-size:.6rem;color:var(--text-muted);text-align:center;margin-top:8px">本地中继推送 · 每5分钟</div>';
   H += '</div><div class="main">';
@@ -1399,8 +1445,8 @@ function renderCoinfilter(container) {
   H += '</div>';
   H += cfStatsBar(list);
   H += '<div class="table-wrap"><div class="table-title">🪙 小币筛选结果 <span style="font-weight:400;font-size:.7rem;color:var(--text-muted);margin-left:8px">点击表头排序 · 点击行展开检查清单 · 24h额合计 $' + fL(totalVol) + '</span></div><div class="table-scroll"><table><thead><tr>';
-  H += '<th></th><th onclick="cfSortBy(\'sym\')">交易对</th><th>价格</th><th onclick="cfSortBy(\'vol\')">24h额</th><th onclick="cfSortBy(\'chg\')">24h涨幅</th><th onclick="cfSortBy(\'oi\')">OI值</th><th onclick="cfSortBy(\'ratio\')">额/OI比</th><th>资费率</th><th onclick="cfSortBy(\'depth\')">盘口深度</th><th>阶段</th><th>信号</th>';
-  H += '</tr></thead><tbody>' + (rows || '<tr><td colspan="11" class="empty-msg">无匹配结果</td></tr>') + '</tbody></table></div></div>';
+  H += '<th></th><th onclick="cfSortBy(\'sym\')">交易对</th><th>价格</th><th onclick="cfSortBy(\'vol\')">24h额</th><th onclick="cfSortBy(\'chg\')">24h涨幅</th><th onclick="cfSortBy(\'oi\')">OI值</th><th onclick="cfSortBy(\'ratio\')">额/OI比</th><th>资费率</th><th onclick="cfSortBy(\'depth\')">盘口深度</th><th>多空比</th><th>24h清算</th><th>OI 24h</th><th>阶段</th><th>信号</th>';
+  H += '</tr></thead><tbody>' + (rows || '<tr><td colspan="14" class="empty-msg">无匹配结果</td></tr>') + '</tbody></table></div></div>';
   H += '<div class="cf-chart-wrap"><h4>🔥 额/OI比 Top20（换手高但OI没跟上 → 挤压空间）</h4>' + cfChartRatio(list) + '</div>';
   H += '<div class="cf-chart-wrap"><h4>📊 OI区间分布（灰=蓄水 · 蓝=小币候选 · 绿=拉升期 · 橙=中期 · 红=大后期）</h4>' + cfChartOi(list) + '</div>';
   H += '<div class="cf-chart-wrap"><h4>🫧 OI值 vs 24h额（对数坐标 · 点大小=额/OI比 · 颜色=OI阶段）</h4>' + cfChartScatter(list) + '</div>';
@@ -1411,5 +1457,6 @@ function renderCoinfilter(container) {
   root.innerHTML = H;
   cfSyncInputs();
 }
+
 </script>
 </body></html>
