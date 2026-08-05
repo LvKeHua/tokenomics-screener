@@ -92,34 +92,44 @@ function proxiedFetch(url, opts = {}) {
 
 async function fetchBinance() {
   const url = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const res = await proxiedFetch(url, { signal: controller.signal, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' } });
-    if (!res.ok) { const t = await res.text().catch(()=>''); throw new Error(`Binance HTTP ${res.status} ${t.slice(0,120)}`); }
-    const data = await res.json();
-    const rows = [];
-    for (const t of data) {
-      if (!t.symbol.endsWith('USDT')) continue;
-      const price = parseFloat(t.lastPrice);
-      const high = parseFloat(t.highPrice);
-      const low = parseFloat(t.lowPrice);
-      if (isNaN(price) || price <= 0) continue;
-      const vol = parseFloat(t.quoteVolume || '0');
-      const chg = parseFloat(t.priceChangePercent || '0');
-      rows.push({
-        symbol: t.symbol,
-        base_asset: t.symbol.replace('USDT', ''),
-        price,
-        change_24h_pct: Math.round(chg * 100) / 100,
-        amplitude_24h_pct: (high && low && high > 0 && low > 0)
-          ? Math.round(((high - low) / price) * 100 * 100) / 100
-          : 0,
-        volume_24h_usdt: vol,
-      });
-    }
-    return rows;
-  } finally { clearTimeout(timer); }
+  // 偶发网络抖动重试：最多3次，间隔 5s/10s
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const res = await proxiedFetch(url, { signal: controller.signal, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' } });
+      if (!res.ok) { const t = await res.text().catch(()=>''); throw new Error(`Binance HTTP ${res.status} ${t.slice(0,120)}`); }
+      const data = await res.json();
+      const rows = [];
+      for (const t of data) {
+        if (!t.symbol.endsWith('USDT')) continue;
+        const price = parseFloat(t.lastPrice);
+        const high = parseFloat(t.highPrice);
+        const low = parseFloat(t.lowPrice);
+        if (isNaN(price) || price <= 0) continue;
+        const vol = parseFloat(t.quoteVolume || '0');
+        const chg = parseFloat(t.priceChangePercent || '0');
+        rows.push({
+          symbol: t.symbol,
+          base_asset: t.symbol.replace('USDT', ''),
+          price,
+          change_24h_pct: Math.round(chg * 100) / 100,
+          amplitude_24h_pct: (high && low && high > 0 && low > 0)
+            ? Math.round(((high - low) / price) * 100 * 100) / 100
+            : 0,
+          volume_24h_usdt: vol,
+        });
+      }
+      if (process.env.DEBUG && attempt > 1) console.log(`Binance: retry #${attempt-1} OK`);
+      return rows;
+    } catch (e) {
+      lastErr = e;
+      if (process.env.DEBUG) console.log(`Binance: attempt ${attempt} failed: ${e.message}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 5000));
+    } finally { clearTimeout(timer); }
+  }
+  throw lastErr || new Error('Binance fetch failed');
 }
 
 // -- Bybit Linear ------------------------------------------------------------
