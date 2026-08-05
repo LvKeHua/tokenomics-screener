@@ -28,9 +28,15 @@ fi
 node --version || { echo "FAIL: node install"; exit 1; }
 
 echo ""
-echo "=== 2/5 下载 relay.mjs ==="
+echo "=== 2/5 获取 relay.mjs（git clone 主域名，raw 域名在VPS被拦） ==="
 mkdir -p /opt/screener
-curl -fsSL https://raw.githubusercontent.com/LvKeHua/tokenomics-screener/main/relay.mjs -o /opt/screener/relay.mjs
+if [ -f /tmp/s/relay.mjs ]; then
+  cp -f /tmp/s/relay.mjs /opt/screener/relay.mjs
+  echo "from /tmp/s (existing clone)"
+else
+  git clone --depth 1 https://github.com/LvKeHua/tokenomics-screener.git /tmp/s 2>/dev/null || true
+  cp -f /tmp/s/relay.mjs /opt/screener/relay.mjs 2>/dev/null || { echo "FAIL: relay.mjs not found"; exit 1; }
+fi
 wc -l /opt/screener/relay.mjs
 
 echo ""
