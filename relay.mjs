@@ -91,16 +91,11 @@ function proxiedFetch(url, opts = {}) {
 }
 
 async function fetchBinance() {
-  const url = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
-  // 偶发网络抖动重试：最多3次，间隔 5s/10s
+  // 偶发网络抖动重试 + 域名轮询：最多3轮，每轮换域名，间隔 5s/10s
   let lastErr = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
-      const res = await proxiedFetch(url, { signal: controller.signal, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' } });
-      if (!res.ok) { const t = await res.text().catch(()=>''); throw new Error(`Binance HTTP ${res.status} ${t.slice(0,120)}`); }
-      const data = await res.json();
+      const data = await fetchBinanceApi('/fapi/v1/ticker/24hr', { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' } });
       const rows = [];
       for (const t of data) {
         if (!t.symbol.endsWith('USDT')) continue;
@@ -127,7 +122,7 @@ async function fetchBinance() {
       lastErr = e;
       if (process.env.DEBUG) console.log(`Binance: attempt ${attempt} failed: ${e.message}`);
       if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 5000));
-    } finally { clearTimeout(timer); }
+    }
   }
   throw lastErr || new Error('Binance fetch failed');
 }
@@ -225,6 +220,33 @@ async function fetchWithTimeout(url, opts = {}) {
   } finally { clearTimeout(timer); }
 }
 
+// ── Binance fAPI 域名轮询：官方备用域名 fapi1-5.binance.com 数据一致，
+//    任一域名失败自动换下一个，规避 Evoxt IP 对单域名间歇性限流/失败 ──
+const BINANCE_FAPI_HOSTS = [
+  'fapi.binance.com', 'fapi1.binance.com', 'fapi2.binance.com',
+  'fapi3.binance.com', 'fapi4.binance.com', 'fapi5.binance.com',
+];
+let binanceHostIdx = 0; // 记住上次成功域名，下次优先
+
+async function fetchBinanceApi(path, opts = {}) {
+  let lastErr = null;
+  for (let i = 0; i < BINANCE_FAPI_HOSTS.length; i++) {
+    const idx = (binanceHostIdx + i) % BINANCE_FAPI_HOSTS.length;
+    const host = BINANCE_FAPI_HOSTS[idx];
+    const url = `https://${host}${path}`;
+    try {
+      const d = await fetchWithTimeout(url, opts);
+      binanceHostIdx = idx; // 记住成功域名
+      if (process.env.DEBUG && i > 0) console.log(`Binance: ${host} OK (fallback ${i})`);
+      return d;
+    } catch (e) {
+      lastErr = e;
+      if (process.env.DEBUG) console.log(`Binance: ${host} failed (${e.message})`);
+    }
+  }
+  throw lastErr || new Error('all binance hosts failed');
+}
+
 async function fetchOpenInterest(symbols) {
   const results = new Map();
   let idx = 0;
@@ -232,7 +254,7 @@ async function fetchOpenInterest(symbols) {
     while (idx < symbols.length) {
       const sym = symbols[idx++];
       try {
-        const d = await fetchWithTimeout(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${sym}`);
+        const d = await fetchBinanceApi(`/fapi/v1/openInterest?symbol=${sym}`);
         const oi = parseFloat(d.openInterest);
         if (!isNaN(oi)) results.set(sym, oi);
       } catch (e) {
@@ -465,7 +487,7 @@ async function fetchFundingRates(symbols) {
   const results = new Map();
   try {
     // 批量接口: 一次返回所有 symbol 的最新资金费率，避免逐 symbol 请求触发限流
-    const d = await fetchWithTimeout('https://fapi.binance.com/fapi/v1/premiumIndex');
+    const d = await fetchBinanceApi('/fapi/v1/premiumIndex');
     if (Array.isArray(d)) {
       const symSet = new Set(symbols);
       for (const row of d) {
@@ -490,7 +512,7 @@ async function fetchOrderbookDepths(symbols) {
       while (attempt < 2) {
         attempt++;
         try {
-          const d = await fetchWithTimeout(`https://fapi.binance.com/fapi/v1/depth?symbol=${sym}&limit=5`);
+          const d = await fetchBinanceApi(`/fapi/v1/depth?symbol=${sym}&limit=5`);
           let total = 0;
           if (d && Array.isArray(d.bids) && Array.isArray(d.asks)) {
             for (const [p, q] of d.bids) total += parseFloat(p) * parseFloat(q);
@@ -516,7 +538,7 @@ let LISTING_INFO_CACHE = null;
 async function fetchListingDates() {
   if (!LISTING_INFO_CACHE) {
     try {
-      const d = await fetchWithTimeout('https://fapi.binance.com/fapi/v1/exchangeInfo');
+      const d = await fetchBinanceApi('/fapi/v1/exchangeInfo');
       const map = new Map();
       if (d && Array.isArray(d.symbols)) {
         for (const s of d.symbols) {
