@@ -46,6 +46,8 @@ chmod 600 /opt/screener/relay.env
 
 cat > /opt/screener/run.sh <<'EOF'
 #!/bin/bash
+# 每次运行前自动同步最新 relay.mjs（github.com 可达），实现全自动更新
+cd /tmp/s 2>/dev/null && git pull --quiet 2>/dev/null && cp -f relay.mjs /opt/screener/relay.mjs 2>/dev/null
 cd /opt/screener
 set -a; source relay.env; set +a
 node relay.mjs >> relay.log 2>&1
