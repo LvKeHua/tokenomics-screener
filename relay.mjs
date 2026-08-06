@@ -832,7 +832,18 @@ async function fetchOiHistory(symbols) {
   return results;
 }
 
-// 吸筹结构评分（2026-08-06 多期验证）
+// 吸筹结构评分（2026-08-06 多期验证 + 2026-08-07 @derrrrrrrq 推文校准）
+// 推文原汁原味规则（可计算化）：
+//   ① "一般要起势都会拉一根大阳线，然后盘整个1-2周，后面等价格达到底部后，而且几乎没有量了，庄会再次拉升"（05-05）
+//      → 大阳线后盘整结构：60天内出现≥15%大阳线，且之后盘整
+//   ② "2M - 8M oi的时候，我基本上oi持仓都是在2%左右"（05-01）
+//      → OI 2M-8M 是甜蜜区，优先
+//   ③ "吸筹前期的变化是价格涨的很缓慢的，oi和价格不会波动很剧烈，1小时的oi和价格可能都不会涨超过百分之1"（04-09）
+//      → 缓涨：近10日累计涨幅 0~15%（不是急跌也不是暴涨）
+//   ④ "玩新不玩旧，别人筹码都派发几波了，还想着拉上来，想多了"（06-02）
+//      → 派发排除：回撤<25%但横盘很久 = 旧币派发嫌疑，不列为候选
+//   ⑤ "前面没有对底部做二次测试，突然拉升，而且拉升前也没有spring…这其实是比较危险的信号"（05-23）
+//      → Spring 标记：跌破前低后收回 = 有测试结构（推文视为更可信的底部）
 // 硬门槛（吸筹结构成立，dn10 3.3% vs 全市场 9.7%）：
 //   ① 距60天高点回撤 ≥40%（底部）
 //   ② 近20日区间宽度 <30%（横盘，不是下跌中继）
@@ -844,9 +855,13 @@ async function fetchOiHistory(symbols) {
 //   +1 横盘宽度<20%（更横）
 //   +1 缩量<10%（更枯竭）
 //   +1 近5日振幅<8%（低波动）
-//   +1 OI 2M-30M（小币区间，可上量）
+//   +1 OI 2M-8M（推文甜蜜区） 或 OI 8M-30M
+//   +1 大阳线后盘整结构（推文①：起势前的标准形态）
+//   +1 缓涨（推文③：近10日涨幅 0~15%）
+//   +1 Spring 测试结构（推文⑤）
 //   +1 上线≤180天（新合约）
 //   -3 额/OI≥5（事件日回避）
+// 候选资格：结构成立 + 评分≥4（含推文维度）
 function computeForwardScore(f) {
   // 硬门槛
   const accStructure = (
@@ -865,7 +880,15 @@ function computeForwardScore(f) {
   if (f.range_20d < 0.20) s += 1;
   if (f.vol_shrink_20d < 0.10) s += 1;
   if (f.vol_compress_5d != null && f.vol_compress_5d < 0.08) s += 1;
-  if (f.oi_value >= 2e6 && f.oi_value < 30e6) s += 1;
+  // 推文②：OI 2M-8M 甜蜜区优先（8M-30M 次之）
+  if (f.oi_value >= 2e6 && f.oi_value < 8e6) s += 2;
+  else if (f.oi_value >= 8e6 && f.oi_value < 30e6) s += 1;
+  // 推文①：大阳线后盘整
+  if (f.breakout_consolidation) s += 1;
+  // 推文③：缓涨
+  if (f.ret_10d != null && f.ret_10d >= -0.05 && f.ret_10d <= 0.15) s += 1;
+  // 推文⑤：Spring 测试结构
+  if (f.spring_test) s += 1;
   if (f.days_since_listing != null && f.days_since_listing <= 180) s += 1;
   if (f.volume_oi_ratio >= 5) s -= 3;
   return s;
@@ -930,6 +953,9 @@ async function relayForward(binanceRows) {
       near_low_20d: null,
       big_move_5d: null,
       vol_compress_5d: null,
+      ret_10d: null,
+      breakout_consolidation: false,
+      spring_test: false,
       forward_score: null,
       signal: null,
     };
@@ -954,6 +980,30 @@ async function relayForward(binanceRows) {
       // 近5日平均振幅
       const amps = k.slice(-5).map(x => (parseFloat(x[2]) - parseFloat(x[3])) / parseFloat(x[4]));
       f.vol_compress_5d = Math.round((amps.reduce((a, b) => a + b, 0) / amps.length) * 10000) / 10000;
+      // 近10日涨幅（推文③：吸筹前期价格涨的很缓慢）
+      f.ret_10d = closes.length > 11 ? Math.round((cur / closes[closes.length - 11] - 1) * 10000) / 10000 : null;
+      // 大阳线后盘整（推文①：起势都会拉一根大阳线，然后盘整个1-2周）
+      //   近60天内出现单日涨幅≥15%的大阳线，且其后20天内价格仍在底部区间盘整
+      f.breakout_consolidation = false;
+      for (let i = Math.max(1, closes.length - 60); i < closes.length - 5; i++) {
+        const dret = closes[i] / closes[i - 1] - 1;
+        if (dret >= 0.15) {
+          // 大阳线后：未来20天高点不超过大阳线日高点×1.15（盘整而非继续拉升）
+          const futureHigh = Math.max(...closes.slice(i, Math.min(i + 20, closes.length)));
+          const candleHigh = parseFloat(k[i][2]);
+          if (futureHigh <= candleHigh * 1.15) { f.breakout_consolidation = true; break; }
+        }
+      }
+      // Spring 测试（推文⑤：跌破前低后收回 = 底部测试）
+      //   近60天内：价格跌破前期低点（≥8%），随后5天内收回至跌破前水平
+      f.spring_test = false;
+      for (let i = Math.max(2, closes.length - 60); i < closes.length - 5; i++) {
+        const priorLow = Math.min(...closes.slice(Math.max(0, i - 20), i));
+        if (priorLow > 0 && closes[i] <= priorLow * 0.92) {
+          const recovered = Math.max(...closes.slice(i, i + 6));
+          if (recovered >= priorLow) { f.spring_test = true; break; }
+        }
+      }
     }
     if (h && h.length >= 10) {
       const oiUsdSeries = h.map(x => parseFloat(x.sumOpenInterestValue)).filter(v => v > 0);
@@ -963,9 +1013,9 @@ async function relayForward(binanceRows) {
       }
     }
     f.forward_score = computeForwardScore(f);
-    // 信号：吸筹结构候选（结构成立 + 评分≥3；环境向上时才是可执行候选）
-    if (f.forward_score >= 3 && f.btc_env_up === true) f.signal = 'acc_candidate';
-    else if (f.forward_score >= 3 && f.btc_env_up === false) f.signal = 'acc_candidate_env_bear';
+    // 信号：吸筹结构候选（结构成立 + 评分≥4，含推文维度；环境向上时才是可执行候选）
+    if (f.forward_score >= 4 && f.btc_env_up === true) f.signal = 'acc_candidate';
+    else if (f.forward_score >= 4 && f.btc_env_up === false) f.signal = 'acc_candidate_env_bear';
     else if (f.volume_oi_ratio >= 5) f.signal = 'avoid_event';
     else if (f.forward_score > 0) f.signal = 'watch';
     else f.signal = 'noise';
