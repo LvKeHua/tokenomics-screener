@@ -1,0 +1,31 @@
+name: Exchange Ticker Relay
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run relay (tickers + demon + coinfilter + forward)
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          RELAY_AUTH_KEY: ${{ secrets.RELAY_AUTH_KEY }}
+          DEMON_URL: ${{ secrets.DEMON_URL }}
+          DEMON_RELAY_KEY: ${{ secrets.DEMON_RELAY_KEY }}
+          COINFILTER_URL: ${{ secrets.COINFILTER_URL }}
+          COINFILTER_RELAY_KEY: ${{ secrets.COINFILTER_RELAY_KEY }}
+          COINALYZE_API_KEY: ${{ secrets.COINALYZE_API_KEY }}
+        run: node relay.mjs
