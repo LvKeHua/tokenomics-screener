@@ -889,6 +889,13 @@ function computeForwardScore(f) {
   if (f.ret_10d != null && f.ret_10d >= -0.05 && f.ret_10d <= 0.15) s += 1;
   // 推文⑤：Spring 测试结构
   if (f.spring_test) s += 1;
+  // dotyyds1234 维度：资金费结构（2025-12-18："资金费高就是吸引套利搞套利的"）
+  //   正资金费高（>0.05%/8h）→ 套利者聚集，有肉吃 → +1
+  //   负资金费 + 价格在涨 → 现货绝对控盘搞纯做空（2025-12-18）→ 排除
+  if (f.funding_rate_pct != null) {
+    if (f.funding_rate_pct > 0.05) s += 1;
+    else if (f.funding_rate_pct < -0.05 && f.change_24h_pct > 0) s -= 3; // 负费率+拉盘=控盘做空
+  }
   if (f.days_since_listing != null && f.days_since_listing <= 180) s += 1;
   if (f.volume_oi_ratio >= 5) s -= 3;
   return s;
@@ -919,7 +926,9 @@ async function relayForward(binanceRows) {
   const oiHistMap = await fetchOiHistory(oiRangeSyms);
   const btcEnv = await fetchBtcEnv();
   const listingMap = await fetchListingDates();
-  console.log(`Forward: klines=${klineMap.size} oiHist=${oiHistMap.size} env=${btcEnv.up}`);
+  // dotyyds1234 维度：资金费（premiumIndex 批量 1 请求，权重低）
+  const fundingMap = await fetchFundingRates(syms);
+  console.log(`Forward: klines=${klineMap.size} oiHist=${oiHistMap.size} funding=${fundingMap.size} env=${btcEnv.up}`);
 
   const payload = [];
   for (const r of sorted) {
@@ -930,6 +939,7 @@ async function relayForward(binanceRows) {
     const k = klineMap.get(r.symbol);
     const h = oiHistMap.get(r.symbol);
     const listing = listingMap.get(r.symbol);
+    const fundingRatePct = fundingMap.get(r.symbol); // 百分比，如 0.05 = 0.05%/8h
     const f = {
       symbol: r.symbol,
       base_asset: r.base_asset,
@@ -956,6 +966,7 @@ async function relayForward(binanceRows) {
       ret_10d: null,
       breakout_consolidation: false,
       spring_test: false,
+      funding_rate_pct: fundingRatePct != null ? Math.round(fundingRatePct * 10000) / 10000 : null,
       forward_score: null,
       signal: null,
     };
