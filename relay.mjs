@@ -758,9 +758,195 @@ async function main() {
   if (payload.binance) {
     await relayCoinfilter(payload.binance);
   }
+
+  // 前导筛选数据（基于本次 Binance ticker）
+  if (payload.binance) {
+    await relayForward(payload.binance, process.env.DEBUG);
+  }
 }
 
-main().catch(err => {
-  console.error('Unhandled relay error:', err);
-  process.exit(1);
-});
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选（Forward Screener）——基于 2026-08-06 数据验证
+// 验证结论：① 额/OI>5 事件日追高 = 负 EV（fwd5 -1.7%），只能当回避信号
+//           ② 蓄水信号（OI 低位 + 底部回撤）有条件性 edge：环境向上时
+//              +0.8%/胜率56%，环境向下时 -5.3%/胜率31%
+// 本模块：计算每个币的 环境开关 / OI 30天分位 / 60天回撤 / 波动压缩，
+//         推送 /api/relay-forward，前端渲染候选池 + 回避名单
+// ═══════════════════════════════════════════════════════════
+const FORWARD_URL = process.env.FORWARD_URL || (DEMON_URL ? DEMON_URL.replace('/relay-demon', '/relay-forward') : 'https://app.slinglab.xyz/screener/api/relay-forward');
+const FORWARD_RELAY_KEY = process.env.DEMON_RELAY_KEY || '0eb3f463c85e160bbedbec6b3131bb862bdd0c82ccf9f390';
+const FORWARD_KLINES_CONCURRENCY = 12;
+const FORWARD_KLINES_LIMIT = 100;   // 100 天日线：60天回撤 + 波动压缩
+const FORWARD_OIH_CONCURRENCY = 4;
+const FORWARD_OIH_DELAY_MS = 300;   // openInterestHist 权重10/请求，4并发×0.3s≈133权重/s
+
+// 市场环境开关：BTC 20日均线方向（验证：环境决定蓄水信号是否有效）
+async function fetchBtcEnv() {
+  try {
+    const k = await fetchBinanceApi('/fapi/v1/klines?symbol=BTCUSDT&interval=1d&limit=25');
+    if (!Array.isArray(k) || k.length < 20) return { up: null, close: null, sma20: null };
+    const closes = k.map(x => parseFloat(x[4]));
+    const sma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    return { up: closes[closes.length - 1] > sma20, close: closes[closes.length - 1], sma20 };
+  } catch (e) {
+    if (process.env.DEBUG) console.log('BTC env: FAILED', e.message);
+    return { up: null, close: null, sma20: null };
+  }
+}
+
+// 100 天日线（60天回撤 + 5日波动压缩）
+async function fetchKlineHistory(symbols) {
+  const results = new Map();
+  let idx = 0;
+  async function worker() {
+    while (idx < symbols.length) {
+      const sym = symbols[idx++];
+      try {
+        const k = await fetchBinanceApi(`/fapi/v1/klines?symbol=${sym}&interval=1d&limit=${FORWARD_KLINES_LIMIT}`);
+        if (Array.isArray(k) && k.length >= 20) results.set(sym, k);
+      } catch (e) { /* skip */ }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(FORWARD_KLINES_CONCURRENCY, symbols.length) }, worker));
+  return results;
+}
+
+// OI 30天历史 → 当前 OI 分位（openInterestHist 权重10/请求，限速）
+async function fetchOiHistory(symbols) {
+  const results = new Map();
+  let idx = 0;
+  async function worker() {
+    while (idx < symbols.length) {
+      const sym = symbols[idx++];
+      try {
+        const h = await fetchBinanceApi(`/futures/data/openInterestHist?symbol=${sym}&period=1d&limit=31`);
+        if (Array.isArray(h) && h.length >= 10) results.set(sym, h);
+      } catch (e) { /* skip */ }
+      await new Promise(r => setTimeout(r, FORWARD_OIH_DELAY_MS));
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(FORWARD_OIH_CONCURRENCY, symbols.length) }, worker));
+  return results;
+}
+
+// 综合评分：基于验证结论加权
+//   +2 OI 30天分位 ≤30%（蓄水信号核心）
+//   +2 距60天高点回撤 ≥30%（底部区域）
+//   +1 近5日平均振幅 <5%（波动压缩，吸筹期特征）
+//   +1 OI 2M-30M（小币区间，可上量）
+//   +1 上线 ≤180 天（新合约有建仓故事）
+//   -3 额/OI ≥5（验证B：事件追高负EV，回避）
+function computeForwardScore(f) {
+  let s = 0;
+  if (f.oi_pctile_30d != null && f.oi_pctile_30d <= 0.30) s += 2;
+  if (f.drawdown_60d != null && f.drawdown_60d >= 0.30) s += 2;
+  if (f.vol_compress_5d != null && f.vol_compress_5d < 0.05) s += 1;
+  if (f.oi_value >= 2e6 && f.oi_value < 30e6) s += 1;
+  if (f.days_since_listing != null && f.days_since_listing <= 180) s += 1;
+  if (f.volume_oi_ratio >= 5) s -= 3;
+  return s;
+}
+
+async function relayForward(binanceRows) {
+  if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
+    console.log('Forward: no binance rows, skip');
+    return;
+  }
+  const sorted = binanceRows.slice().sort((a, b) => (b.volume_24h_usdt || 0) - (a.volume_24h_usdt || 0));
+  const candidates = sorted.filter(r => (r.volume_24h_usdt || 0) >= DEMON_MIN_VOL);
+  if (candidates.length === 0) { console.log('Forward: no candidates, skip'); return; }
+
+  const syms = candidates.map(r => r.symbol);
+  const oiMap = await fetchOpenInterest(syms);
+  console.log(`Forward: got OI=${oiMap.size}`);
+
+  // 只对 OI 2M-80M 的候选算 OI 历史分位（全量 530 币权重10×530=5300超限）
+  const oiRangeSyms = syms.filter(sym => {
+    const oi = oiMap.get(sym);
+    const r = sorted.find(x => x.symbol === sym);
+    if (oi == null || !r) return false;
+    const oiValue = oi * r.price;
+    return oiValue >= 2000000 && oiValue <= 80000000;
+  });
+  const klineMap = await fetchKlineHistory(syms);
+  const oiHistMap = await fetchOiHistory(oiRangeSyms);
+  const btcEnv = await fetchBtcEnv();
+  const listingMap = await fetchListingDates();
+  console.log(`Forward: klines=${klineMap.size} oiHist=${oiHistMap.size} env=${btcEnv.up}`);
+
+  const payload = [];
+  for (const r of sorted) {
+    const oi = oiMap.get(r.symbol);
+    if (oi == null) continue;
+    const oiValue = oi * r.price;
+    const volumeOiRatio = oiValue > 0 ? r.volume_24h_usdt / oiValue : 0;
+    const k = klineMap.get(r.symbol);
+    const h = oiHistMap.get(r.symbol);
+    const listing = listingMap.get(r.symbol);
+    const f = {
+      symbol: r.symbol,
+      base_asset: r.base_asset,
+      price: r.price,
+      change_24h_pct: r.change_24h_pct,
+      amplitude_24h_pct: r.amplitude_24h_pct,
+      volume_24h_usdt: r.volume_24h_usdt,
+      oi_value: Math.round(oiValue * 100) / 100,
+      oi_contracts: oi,
+      volume_oi_ratio: Math.round(volumeOiRatio * 10000) / 10000,
+      oi_stage: computeOiStage(oiValue).stage,
+      oi_stage_label: computeOiStage(oiValue).label,
+      days_since_listing: listing ? listing.days_since_listing : null,
+      btc_env_up: btcEnv.up,
+      btc_close: btcEnv.close,
+      btc_sma20: btcEnv.sma20,
+      oi_pctile_30d: null,
+      drawdown_60d: null,
+      vol_compress_5d: null,
+      forward_score: null,
+      signal: null,
+    };
+    if (k && k.length >= 20) {
+      const closes = k.map(x => parseFloat(x[4]));
+      const hi60 = Math.max(...closes.slice(-60));
+      const cur = closes[closes.length - 1];
+      f.drawdown_60d = hi60 > 0 ? Math.round((1 - cur / hi60) * 10000) / 10000 : null;
+      const amps = k.slice(-5).map(x => (parseFloat(x[2]) - parseFloat(x[3])) / parseFloat(x[4]));
+      f.vol_compress_5d = Math.round((amps.reduce((a, b) => a + b, 0) / amps.length) * 10000) / 10000;
+    }
+    if (h && h.length >= 10) {
+      const oiUsdSeries = h.map(x => parseFloat(x.sumOpenInterestValue)).filter(v => v > 0);
+      if (oiUsdSeries.length >= 10) {
+        const cur = oiUsdSeries[oiUsdSeries.length - 1];
+        f.oi_pctile_30d = Math.round((oiUsdSeries.filter(v => v <= cur).length / oiUsdSeries.length) * 10000) / 10000;
+      }
+    }
+    f.forward_score = computeForwardScore(f);
+    // 信号：命中蓄水候选（环境向上时才有意义）
+    if (f.forward_score >= 4 && f.btc_env_up === true) f.signal = 'acc_candidate';
+    else if (f.forward_score >= 4 && f.btc_env_up === false) f.signal = 'acc_candidate_env_bear';
+    else if (f.volume_oi_ratio >= 5) f.signal = 'avoid_event';
+    else if (f.forward_score >= 2) f.signal = 'watch';
+    else f.signal = 'noise';
+    payload.push(f);
+  }
+  if (payload.length === 0) { console.log('Forward: no payload, skip'); return; }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const resp = await fetch(FORWARD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Auth-Key': FORWARD_RELAY_KEY },
+      body: JSON.stringify({ data: payload, env: btcEnv }),
+      signal: controller.signal,
+    });
+    const result = await resp.json();
+    if (resp.ok && result.ok) {
+      console.log(`Forward relay OK: ${result.coins} coins, env=${btcEnv.up} — updated ${result.updated}`);
+    } else {
+      console.error(`Forward relay error (HTTP ${resp.status}):`, JSON.stringify(result));
+    }
+  } catch (e) {
+    console.error('Forward relay failed:', e.message);
+  } finally { clearTimeout(timer); }
+}
