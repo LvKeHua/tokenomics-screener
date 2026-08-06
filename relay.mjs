@@ -767,16 +767,19 @@ async function main() {
 
 // ═══════════════════════════════════════════════════════════
 // 🧭 前导筛选（Forward Screener）——基于 2026-08-06 数据验证
-// 验证结论：① 额/OI>5 事件日追高 = 负 EV（fwd5 -1.7%），只能当回避信号
-//           ② 蓄水信号（OI 低位 + 底部回撤）有条件性 edge：环境向上时
-//              +0.8%/胜率56%，环境向下时 -5.3%/胜率31%
-// 本模块：计算每个币的 环境开关 / OI 30天分位 / 60天回撤 / 波动压缩，
-//         推送 /api/relay-forward，前端渲染候选池 + 回避名单
+// 验证结论（多期 5×530 币 + 三个月 OKX 4592 事件）：
+//   ① 额/OI>5 事件日追高 = 负 EV（fwd5 -1.7%），只能当回避信号
+//   ② 吸筹结构（底部+横盘+缩量+无新低+无异动）的真实价值是下行保护：
+//      dn10（5天跌超10%概率）从全市场 9.7% 降到 3.3%，均值持平
+//   ③ OI 分位叠加反而更差（-1.5%）——OI 持续缩的币是资金在跑，不是建仓
+//   ④ 环境开关仍然第一优先：环境向上时信号才有正期望
+// 本模块：计算 环境开关 / 吸筹结构五要素 / OI 分位（展示用），
+//         推送 /api/relay-forward，前端渲染吸筹候选池 + 回避名单
 // ═══════════════════════════════════════════════════════════
 const FORWARD_URL = process.env.FORWARD_URL || (DEMON_URL ? DEMON_URL.replace('/relay-demon', '/relay-forward') : 'https://app.slinglab.xyz/screener/api/relay-forward');
 const FORWARD_RELAY_KEY = process.env.DEMON_RELAY_KEY || '0eb3f463c85e160bbedbec6b3131bb862bdd0c82ccf9f390';
 const FORWARD_KLINES_CONCURRENCY = 12;
-const FORWARD_KLINES_LIMIT = 100;   // 100 天日线：60天回撤 + 波动压缩
+const FORWARD_KLINES_LIMIT = 100;   // 100 天日线：60天回撤 + 横盘宽度 + 缩量 + 波动
 const FORWARD_OIH_CONCURRENCY = 4;
 const FORWARD_OIH_DELAY_MS = 300;   // openInterestHist 权重10/请求，4并发×0.3s≈133权重/s
 
@@ -794,7 +797,7 @@ async function fetchBtcEnv() {
   }
 }
 
-// 100 天日线（60天回撤 + 5日波动压缩）
+// 100 天日线（60天回撤 + 横盘宽度 + 缩量 + 波动压缩 + 异动检测）
 async function fetchKlineHistory(symbols) {
   const results = new Map();
   let idx = 0;
@@ -811,7 +814,7 @@ async function fetchKlineHistory(symbols) {
   return results;
 }
 
-// OI 30天历史 → 当前 OI 分位（openInterestHist 权重10/请求，限速）
+// OI 30天历史 → 当前 OI 分位（展示用，不再参与评分——验证显示 OI 低位叠加反而更差）
 async function fetchOiHistory(symbols) {
   const results = new Map();
   let idx = 0;
@@ -829,18 +832,39 @@ async function fetchOiHistory(symbols) {
   return results;
 }
 
-// 综合评分：基于验证结论加权
-//   +2 OI 30天分位 ≤30%（蓄水信号核心）
-//   +2 距60天高点回撤 ≥30%（底部区域）
-//   +1 近5日平均振幅 <5%（波动压缩，吸筹期特征）
+// 吸筹结构评分（2026-08-06 多期验证）
+// 硬门槛（吸筹结构成立，dn10 3.3% vs 全市场 9.7%）：
+//   ① 距60天高点回撤 ≥40%（底部）
+//   ② 近20日区间宽度 <30%（横盘，不是下跌中继）
+//   ③ 近5日均额 ≤ 60日峰额的20%（量能枯竭）
+//   ④ 收盘价 > 近20日低点×1.03（不在创新低）
+//   ⑤ 近5日无单日|涨跌|>15%（无异常波动）
+// 强度分（排序用）：
+//   +1 回撤≥60%（深底）
+//   +1 横盘宽度<20%（更横）
+//   +1 缩量<10%（更枯竭）
+//   +1 近5日振幅<8%（低波动）
 //   +1 OI 2M-30M（小币区间，可上量）
-//   +1 上线 ≤180 天（新合约有建仓故事）
-//   -3 额/OI ≥5（验证B：事件追高负EV，回避）
+//   +1 上线≤180天（新合约）
+//   -3 额/OI≥5（事件日回避）
 function computeForwardScore(f) {
-  let s = 0;
-  if (f.oi_pctile_30d != null && f.oi_pctile_30d <= 0.30) s += 2;
-  if (f.drawdown_60d != null && f.drawdown_60d >= 0.30) s += 2;
-  if (f.vol_compress_5d != null && f.vol_compress_5d < 0.05) s += 1;
+  // 硬门槛
+  const accStructure = (
+    f.drawdown_60d != null && f.drawdown_60d >= 0.40 &&
+    f.range_20d != null && f.range_20d < 0.30 &&
+    f.vol_shrink_20d != null && f.vol_shrink_20d < 0.20 &&
+    f.near_low_20d != null && f.near_low_20d > 1.03 &&
+    f.big_move_5d != null && !f.big_move_5d
+  );
+  if (!accStructure) {
+    if (f.volume_oi_ratio >= 5) return -3;
+    return 0;
+  }
+  let s = 3; // 结构成立基础分
+  if (f.drawdown_60d >= 0.60) s += 1;
+  if (f.range_20d < 0.20) s += 1;
+  if (f.vol_shrink_20d < 0.10) s += 1;
+  if (f.vol_compress_5d != null && f.vol_compress_5d < 0.08) s += 1;
   if (f.oi_value >= 2e6 && f.oi_value < 30e6) s += 1;
   if (f.days_since_listing != null && f.days_since_listing <= 180) s += 1;
   if (f.volume_oi_ratio >= 5) s -= 3;
@@ -901,6 +925,10 @@ async function relayForward(binanceRows) {
       btc_sma20: btcEnv.sma20,
       oi_pctile_30d: null,
       drawdown_60d: null,
+      range_20d: null,
+      vol_shrink_20d: null,
+      near_low_20d: null,
+      big_move_5d: null,
       vol_compress_5d: null,
       forward_score: null,
       signal: null,
@@ -910,6 +938,20 @@ async function relayForward(binanceRows) {
       const hi60 = Math.max(...closes.slice(-60));
       const cur = closes[closes.length - 1];
       f.drawdown_60d = hi60 > 0 ? Math.round((1 - cur / hi60) * 10000) / 10000 : null;
+      // 横盘宽度：近20日收盘区间 (max-min)/min
+      const win20 = closes.slice(-20);
+      const mn = Math.min(...win20), mx = Math.max(...win20);
+      f.range_20d = mn > 0 ? Math.round(((mx - mn) / mn) * 10000) / 10000 : null;
+      f.near_low_20d = mn > 0 ? Math.round((cur / mn) * 10000) / 10000 : null;
+      // 量能枯竭：近5日均额 / 60日峰额
+      const turns = k.slice(-60).map(x => parseFloat(x[7]));
+      const turnMax = Math.max(...turns);
+      const turn5 = turns.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      f.vol_shrink_20d = turnMax > 0 ? Math.round((turn5 / turnMax) * 10000) / 10000 : null;
+      // 近5日单日异动
+      const dayrets = closes.slice(-6).map((c, i, arr) => i === 0 ? 0 : c / arr[i - 1] - 1);
+      f.big_move_5d = dayrets.slice(-5).some(x => Math.abs(x) > 0.15);
+      // 近5日平均振幅
       const amps = k.slice(-5).map(x => (parseFloat(x[2]) - parseFloat(x[3])) / parseFloat(x[4]));
       f.vol_compress_5d = Math.round((amps.reduce((a, b) => a + b, 0) / amps.length) * 10000) / 10000;
     }
@@ -921,11 +963,11 @@ async function relayForward(binanceRows) {
       }
     }
     f.forward_score = computeForwardScore(f);
-    // 信号：命中蓄水候选（环境向上时才有意义）
-    if (f.forward_score >= 4 && f.btc_env_up === true) f.signal = 'acc_candidate';
-    else if (f.forward_score >= 4 && f.btc_env_up === false) f.signal = 'acc_candidate_env_bear';
+    // 信号：吸筹结构候选（结构成立 + 评分≥3；环境向上时才是可执行候选）
+    if (f.forward_score >= 3 && f.btc_env_up === true) f.signal = 'acc_candidate';
+    else if (f.forward_score >= 3 && f.btc_env_up === false) f.signal = 'acc_candidate_env_bear';
     else if (f.volume_oi_ratio >= 5) f.signal = 'avoid_event';
-    else if (f.forward_score >= 2) f.signal = 'watch';
+    else if (f.forward_score > 0) f.signal = 'watch';
     else f.signal = 'noise';
     payload.push(f);
   }
