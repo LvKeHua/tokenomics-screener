@@ -992,3 +992,8 @@ async function relayForward(binanceRows) {
     console.error('Forward relay failed:', e.message);
   } finally { clearTimeout(timer); }
 }
+
+main().catch(err => {
+  console.error('Unhandled relay error:', err);
+  process.exit(1);
+});
