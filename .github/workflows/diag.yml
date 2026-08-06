@@ -1,0 +1,17 @@
+name: Diag Binance
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "=== fapi.binance.com ==="
+          curl -s -m 10 -w "\nHTTP %{http_code} in %{time_total}s\n" "https://fapi.binance.com/fapi/v1/ping" || echo "FAIL"
+          curl -s -m 10 -o /dev/null -w "ticker HTTP %{http_code} in %{time_total}s\n" "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT" || echo "ticker FAIL"
+          echo "=== fapi1 ==="
+          curl -s -m 10 -w "\nHTTP %{http_code}\n" "https://fapi1.binance.com/fapi/v1/ping" || echo "fapi1 FAIL"
+          echo "=== bybit ==="
+          curl -s -m 10 -o /dev/null -w "bybit HTTP %{http_code}\n" "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT" || echo "bybit FAIL"
