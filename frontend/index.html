@@ -1789,6 +1789,17 @@ rD = function () {
   if (__scRD) __scRD();
 };
 
+// 🔄 全局自动刷新：每 5 分钟按当前 tab 重新拉取（与 relay 更新周期对齐）
+setInterval(function () {
+  try {
+    if (curTab === 'chip') { lX(); }
+    else if (curTab === 'demon' && typeof demonLoad === 'function') { demonLoad(); }
+    else if (curTab === 'coinfilter' && typeof coinfilterLoad === 'function') { coinfilterLoad(); }
+    else if (curTab === 'forward' && typeof forwardLoad === 'function') { forwardLoad(); }
+    else if (curTab === 'watchlist' && typeof scLoad === 'function') { scLoad(); }
+  } catch (e) { /* 静默失败，下次再试 */ }
+}, 300000); // 5 分钟
+
 function scLoad() {
   var root = document.getElementById('root');
   root.innerHTML = '<div class="empty-msg">🧭 正在加载筛币工作台（L0 环境闸门 + 候选池 + 排除层 + 告警）...</div>';
