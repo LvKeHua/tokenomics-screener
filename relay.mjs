@@ -274,8 +274,11 @@ async function fetchBinanceApi(path, opts = {}) {
 async function fetchOpenInterest(symbols) {
   const results = new Map();
   let idx = 0;
+  const started = Date.now();
   async function worker() {
     while (idx < symbols.length) {
+      // 整体超时 150s：防止 418/限流时无限重试拖垮管线
+      if (Date.now() - started > 150000) return;
       const sym = symbols[idx++];
       try {
         const d = await fetchBinanceApi(`/fapi/v1/openInterest?symbol=${sym}`);
@@ -290,7 +293,7 @@ async function fetchOpenInterest(symbols) {
   return results;
 }
 
-async function relayDemon(binanceRows, agg) {
+async function relayDemon(binanceRows, agg, sharedOiMap) {
   if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
     console.log('Demon: no binance rows, skip');
     return;
@@ -298,9 +301,14 @@ async function relayDemon(binanceRows, agg) {
   const sorted = binanceRows.slice().sort((a, b) => (b.volume_24h_usdt || 0) - (a.volume_24h_usdt || 0));
   const candidates = sorted.filter(r => (r.volume_24h_usdt || 0) >= DEMON_MIN_VOL);
   if (candidates.length === 0) { console.log('Demon: no candidates, skip'); return; }
-  console.log(`Demon: fetching OI for ${candidates.length} symbols...`);
-  const oiMap = await fetchOpenInterest(candidates.map(r => r.symbol));
-  console.log(`Demon: got ${oiMap.size} OI values`);
+  let oiMap = sharedOiMap;
+  if (!oiMap || oiMap.size === 0) {
+    console.log(`Demon: fetching OI for ${candidates.length} symbols...`);
+    oiMap = await fetchOpenInterest(candidates.map(r => r.symbol));
+    console.log(`Demon: got ${oiMap.size} OI values`);
+  } else {
+    console.log(`Demon: using shared OI (${oiMap.size} values)`);
+  }
   const payload = [];
   for (const r of sorted) {
     const oi = oiMap.get(r.symbol);
@@ -818,22 +826,26 @@ async function main() {
     console.error('Tickers relay failed:', e.message);
   } finally { clearTimeout(timer); }
 
+  // 全市场聚合：OI = Binance(一次全量) + Bybit(ticker自带) + OKX(全量接口)
+  const okxOiMap = await fetchOkxOi().catch(() => new Map());
+  const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
+  // Binance OI 只抓一次，三个模块复用（避免 3×679 请求触发限流卡死）
+  const oiMap = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
+  console.log(`Main: fetched OI=${oiMap.size} (shared across demon/coinfilter/forward)`);
+
   // 妖币扫描数据（基于本次 Binance ticker + 全市场聚合）
   if (payload.binance) {
-    // 全市场聚合：OI = Binance(逐合约) + Bybit(ticker自带) + OKX(全量接口)
-    const okxOiMap = await fetchOkxOi().catch(() => new Map());
-    const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
-    await relayDemon(payload.binance, agg).catch(e => console.error('Demon relay failed:', e.message));
+    await relayDemon(payload.binance, agg, oiMap).catch(e => console.error('Demon relay failed:', e.message));
   }
 
   // 小币筛选数据（基于本次 Binance ticker）
   if (payload.binance) {
-    await relayCoinfilter(payload.binance, null, null, null, null, agg).catch(e => console.error('Coinfilter relay failed:', e.message));
+    await relayCoinfilter(payload.binance, oiMap, null, null, null, agg).catch(e => console.error('Coinfilter relay failed:', e.message));
   }
 
   // 前导筛选数据（基于本次 Binance ticker）
   if (payload.binance) {
-    await relayForward(payload.binance, process.env.DEBUG, agg).catch(e => console.error('Forward relay failed:', e.message));
+    await relayForward(payload.binance, process.env.DEBUG, agg, oiMap).catch(e => console.error('Forward relay failed:', e.message));
   }
 }
 
@@ -979,7 +991,7 @@ function computeForwardScore(f) {
   return s;
 }
 
-async function relayForward(binanceRows, debug, agg) {
+async function relayForward(binanceRows, debug, agg, sharedOiMap) {
   if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
     console.log('Forward: no binance rows, skip');
     return;
@@ -989,8 +1001,11 @@ async function relayForward(binanceRows, debug, agg) {
   if (candidates.length === 0) { console.log('Forward: no candidates, skip'); return; }
 
   const syms = candidates.map(r => r.symbol);
-  const oiMap = await fetchOpenInterest(syms);
-  console.log(`Forward: got OI=${oiMap.size}`);
+  let oiMap = sharedOiMap;
+  if (!oiMap || oiMap.size === 0) {
+    oiMap = await fetchOpenInterest(syms);
+  }
+  console.log(`Forward: using OI=${oiMap.size}`);
 
   // 只对 OI 2M-80M 的候选算 OI 历史分位（全量 530 币权重10×530=5300超限）
   const oiRangeSyms = syms.filter(sym => {
