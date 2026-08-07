@@ -383,9 +383,35 @@ tr.cf-row-click:hover td{background:rgba(255,255,255,0.035)}
 .cf-scatter-legend-item{display:flex;align-items:center;gap:3px}
 .cf-scatter-legend-item i{width:8px;height:8px;border-radius:50%;display:inline-block}
 .cf-note{font-size:.62rem;color:var(--text-muted);margin-top:8px;line-height:1.6}
+
+/* 🧭 前导筛选 视图样式 */
+.fwd-wrap{display:flex;flex-direction:column;gap:12px}
+.fwd-env{padding:12px 14px;border-radius:var(--radius);font-size:13px;line-height:1.6}
+.fwd-env-bull{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.45);color:#34d399}
+.fwd-env-bear{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.45);color:#f87171}
+.fwd-env-na{background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.4);color:#94a3b8}
+.fwd-hint{padding:8px 14px;border-radius:var(--radius);font-size:12px;line-height:1.5;opacity:.9}
+.fwd-hint-bull{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3);color:#34d399}
+.fwd-hint-bear{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);color:#f87171}
+.fwd-hint-na{background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.3);color:#94a3b8}
+.fwd-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.fwd-stats{font-size:12px;color:var(--text-dim,#94a3b8)}
+.fwd-tbl th{font-size:11px;padding:6px 8px;white-space:nowrap}
+.fwd-tbl td{font-size:12px;padding:6px 8px;white-space:nowrap}
+.fwd-acc td{background:rgba(16,185,129,.06)}
+.fwd-avoid td{background:rgba(239,68,68,.08)}
+.fwd-avoid .score{color:#f87171;font-weight:700}
+.tag-low{background:rgba(16,185,129,.18);color:#34d399}
+.tag-new{background:rgba(59,130,246,.18);color:#60a5fa}
+.tag-watch{background:rgba(245,158,11,.18);color:#fbbf24}
+.tag-fund{background:rgba(16,185,129,.18);color:#34d399}
+.tag-danger{background:rgba(239,68,68,.25);color:#f87171}
+.tag-noise{opacity:.35}
+.fwd-foot{font-size:11px;padding-top:8px;border-top:1px solid var(--border,#ffffff22)}
+.score{font-weight:700}
 </style>
 </head><body>
-<div id="tabbar"><button class="tab-btn tab-chip active" onclick="switchTab('chip')">🧲 筹码筛选</button><button class="tab-btn tab-demon" onclick="switchTab('demon')">👺 妖币扫描</button><button class="tab-btn tab-coinfilter" onclick="switchTab('coinfilter')">🪙 小币筛选</button></div>
+<div id="tabbar"><button class="tab-btn tab-chip active" onclick="switchTab('chip')">🧲 筹码筛选</button><button class="tab-btn tab-demon" onclick="switchTab('demon')">👺 妖币扫描</button><button class="tab-btn tab-coinfilter" onclick="switchTab('coinfilter')">🪙 小币筛选</button><button class="tab-btn tab-forward" onclick="switchTab('forward')">🧭 前导筛选</button><button class="tab-btn tab-watchlist" onclick="switchTab('watchlist')">🧭 筛币工作台</button></div>
 <div id="root"><div class="loading-root"><div class="spinner"></div><div class="loading-text">正在加载数据...</div></div></div>
 <script>
 var BASE = (window.location.pathname || "/").replace(/\/+$/, "");
@@ -539,6 +565,290 @@ function switchTab(t) {
   } else {
     __chipRD();
   }
+}
+
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：OI分位/回撤/波动压缩/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：OI分位/回撤/波动压缩/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：吸筹结构因子/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：吸筹结构因子/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：吸筹结构因子/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：吸筹结构因子/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：吸筹结构因子/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：吸筹结构因子/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// 🧭 前导筛选器 视图（基于 2026-08-06 数据验证结论）
+// 验证结论：
+//   ① 额/OI>5 事件日追高 = 负 EV（三个月 4592 事件，fwd5 -1.7%）→ 只当回避信号
+//   ② 蓄水信号（OI 30天分位低 + 60天回撤大）edge 是条件性的：
+//      环境向上 +0.8%/胜率56%，环境向下 -5.3%/胜率31% → 环境开关是第一优先
+// 数据: GET /api/forward（relay 推送：吸筹结构因子/BTC环境）
+// ═══════════════════════════════════════════════════════════
+
+if (typeof curTab === 'undefined') var curTab = 'chip';
+var forwardData = [], forwardUpdated = null, forwardEnv = null, forwardLoaded = false;
+var fwdAutoTimer = null;
+
+// ── 自动刷新：每 5 分钟重新拉取数据并重渲染（VPS cron 每 15 分钟更新数据）──
+function fwdStartAutoRefresh() {
+  if (fwdAutoTimer) return;
+  fwdAutoTimer = setInterval(function () {
+    if (curTab !== 'forward') return; // 不在前导 tab 时跳过
+    fetch(BASE + '/api/forward').then(function (r) { return r.json(); }).then(function (d) {
+      var coins = d.data || [];
+      if (!coins.length) return;
+      forwardData = coins;
+      forwardUpdated = d.updated || forwardUpdated;
+      if (curTab === 'forward') renderForward();
+    }).catch(function () { /* 静默失败，下次再试 */ });
+  }, 300000); // 5 分钟
+}
+var fSort = 'forward_score', fAsc = false, fTag = '', fMinScore = 0;
+
+// ── 挂接 Tab 切换（与 _coinfilter.js 同模式，链式调用）──
+var __fwdSwitchTab = (typeof switchTab === 'function') ? switchTab : null;
+switchTab = function (t) {
+  if (t === 'forward') {
+    curTab = t;
+    var tb = document.getElementById('tabbar');
+    if (tb) {
+      tb.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
+      var btn = tb.querySelector('.tab-forward');
+      if (btn) btn.classList.add('active');
+    }
+    if (!forwardLoaded) forwardLoad(); else renderForward();
+    return;
+  }
+  if (__fwdSwitchTab) { __fwdSwitchTab(t); return; }
+  if (t === 'demon' && typeof renderDemon === 'function') { renderDemon(); return; }
+  if (typeof rD === 'function') rD();
+};
+
+var __fwdRD = (typeof rD === 'function') ? rD : null;
+rD = function () {
+  if (curTab === 'forward') { renderForward(); return; }
+  if (__fwdRD) __fwdRD();
+};
+
+// ── 数据加载 ──
+function forwardLoad() {
+  var root = document.getElementById('root');
+  root.innerHTML = '<div class="empty-msg">🧭 正在加载前导筛选数据（吸筹结构/BTC环境）...</div>';
+  fetch(BASE + '/api/forward').then(function (r) { return r.json(); }).then(function (d) {
+    var coins = d.data || [];
+    if (d.error && !coins.length) throw new Error(d.error);
+    if (!coins.length) throw new Error('forward 暂无数据（relay 可能未配置 /api/relay-forward）');
+    forwardData = coins;
+    forwardUpdated = d.updated || null;
+    forwardEnv = d.env || null;
+    forwardLoaded = true;
+    fwdStartAutoRefresh();
+    renderForward();
+  }).catch(function (err) {
+    root.innerHTML = '<div class="empty-msg">🧭 前导数据加载失败: ' + e(err.message) + '<br><br><button class="btn" onclick="forwardLoad()">重试</button></div>';
+  });
+}
+
+function fwdReload() { forwardLoaded = false; forwardLoad(); }
+
+
+// ── 筛选/排序 ──
+function fwdFiltered() {
+  var rows = forwardData.slice();
+  if (fTag === 'acc') rows = rows.filter(function (r) { return r.signal === 'acc_candidate'; });
+  else if (fTag === 'avoid') rows = rows.filter(function (r) { return r.volume_oi_ratio >= 5; });
+  else if (fTag === 'watch') rows = rows.filter(function (r) { return r.signal === 'watch'; });
+  rows = rows.filter(function (r) { return (r.forward_score || 0) >= fMinScore; });
+  rows.sort(function (a, b) {
+    var va = a[fSort] || 0, vb = b[fSort] || 0;
+    return fAsc ? va - vb : vb - va;
+  });
+  return rows;
+}
+
+function fwdSetPreset(tag) {
+  fTag = tag;
+  fMinScore = (tag === 'acc') ? 3 : 0;
+  renderForward();
+}
+
+function fwdSortBy(k) {
+  if (fSort === k) fAsc = !fAsc; else { fSort = k; fAsc = false; }
+  renderForward();
+}
+
+function fwdTagHtml(r) {
+  var tags = [];
+  if (r.signal === 'acc_candidate') tags.push('<span class="tag tag-acc">🧭蓄水候选</span>');
+  else if (r.signal === 'avoid_event') tags.push('<span class="tag tag-danger">⛔事件回避</span>');
+  else if (r.signal === 'watch') tags.push('<span class="tag tag-watch">👁观察</span>');
+  else tags.push('<span class="tag tag-noise">·</span>');
+  if (r.drawdown_60d != null && r.drawdown_60d >= 0.40) tags.push('<span class="tag tag-low">深底</span>');
+  if (r.range_20d != null && r.range_20d < 0.30) tags.push('<span class="tag tag-low">横盘</span>');
+  if (r.vol_shrink_20d != null && r.vol_shrink_20d < 0.20) tags.push('<span class="tag tag-low">缩量</span>');
+  if (r.breakout_consolidation) tags.push('<span class="tag tag-new">大阳线后盘整</span>');
+  if (r.spring_test) tags.push('<span class="tag tag-new">Spring测试</span>');
+  if (r.funding_rate_pct != null && r.funding_rate_pct > 0.05) tags.push('<span class="tag tag-fund">💰正费率</span>');
+  if (r.funding_rate_pct != null && r.funding_rate_pct < -0.05 && r.change_24h_pct > 0) tags.push('<span class="tag tag-danger">⛔负费率拉盘</span>');
+  if (r.ret_10d != null && r.ret_10d >= -0.05 && r.ret_10d <= 0.15) tags.push('<span class="tag tag-watch">缓涨</span>');
+  if (r.vol_compress_5d != null && r.vol_compress_5d < 0.05) tags.push('<span class="tag tag-low">缩波</span>');
+  if (r.days_since_listing != null && r.days_since_listing <= 180) tags.push('<span class="tag tag-new">新上</span>');
+  return tags.join(' ');
+}
+
+// ── 观察池标记（localStorage）──
+function fwdWatchKey() { return 'fwd_watchlist'; }
+function fwdGetWatch() {
+  try { return JSON.parse(localStorage.getItem(fwdWatchKey()) || '{}'); } catch (e) { return {}; }
+}
+function fwdToggleWatch(sym) {
+  var w = fwdGetWatch();
+  if (w[sym]) delete w[sym]; else w[sym] = Date.now();
+  try { localStorage.setItem(fwdWatchKey(), JSON.stringify(w)); } catch (e) {}
+  renderForward();
+}
+
+// ── BTC 方向提示（仅展示，不参与评分/筛选）──
+function fwdEnvHint() {
+  var env = forwardEnv;
+  if (!env || env.up == null) {
+    return '<div class="fwd-hint fwd-hint-na">BTC 方向：未知（仅供参考，不影响筛选）</div>';
+  }
+  if (env.up === true) {
+    return '<div class="fwd-hint fwd-hint-bull">BTC 方向：向上（BTC ' + fP(env.close) + ' &gt; SMA20 ' + fP(env.sma20) + '）— 仅供参考，不参与筛选</div>';
+  }
+  return '<div class="fwd-hint fwd-hint-bear">BTC 方向：向下（BTC ' + fP(env.close) + ' &lt; SMA20 ' + fP(env.sma20) + '）— 仅供参考，不参与筛选</div>';
+}
+
+// ── 主渲染 ──
+function renderForward() {
+  var root = document.getElementById('root');
+  var rows = fwdFiltered();
+  var watch = fwdGetWatch();
+  var accN = forwardData.filter(function (r) { return r.signal === 'acc_candidate'; }).length;
+  var avoidN = forwardData.filter(function (r) { return r.volume_oi_ratio >= 5; }).length;
+  var watchN = Object.keys(watch).length;
+
+  var H = '<div class="fwd-wrap">';
+  H += fwdEnvHint();
+  H += '<div class="fwd-bar">';
+  H += '<button class="btn' + (fTag === '' ? ' btn-active' : '') + '" onclick="fwdSetPreset(\'\')">🎯 全部 (' + rows.length + ')</button>';
+  H += '<button class="btn' + (fTag === 'acc' ? ' btn-active' : '') + '" onclick="fwdSetPreset(\'acc\')">🧭 蓄水候选 (' + accN + ')</button>';
+  H += '<button class="btn' + (fTag === 'avoid' ? ' btn-active' : '') + '" onclick="fwdSetPreset(\'avoid\')">⛔ 回避名单 (' + avoidN + ')</button>';
+  H += '<button class="btn' + (fTag === 'watch' ? ' btn-active' : '') + '" onclick="fwdSetPreset(\'watch\')">👁 观察池 (' + watchN + ')</button>';
+  H += '<span class="dim" style="margin-left:auto">更新: ' + (forwardUpdated ? new Date(forwardUpdated).toLocaleString() : '—') + '</span>';
+  H += '</div>';
+  H += '<div class="fwd-stats">🧭候选 ' + accN + ' · ⛔回避 ' + avoidN + ' · 👁已标记 ' + watchN + '</div>';
+
+  if (rows.length === 0) {
+    H += '<div class="empty-msg">没有符合条件的币。</div>';
+  } else {
+    H += '<div class="table-wrap"><table class="tbl fwd-tbl"><thead><tr>';
+    H += '<th></th><th class="sortable" onclick="fwdSortBy(\'symbol\')">币种</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'price\')">价格</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'change_24h_pct\')">24h%</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'oi_value\')">OI($M)</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'volume_oi_ratio\')">额/OI</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'drawdown_60d\')">回撤60d</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'range_20d\')">横盘20d</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'vol_shrink_20d\')">缩量</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'near_low_20d\')">距低点</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'funding_rate_pct\')">资费%</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'days_since_listing\')">上线</th>';
+    H += '<th class="sortable" onclick="fwdSortBy(\'forward_score\')">评分</th>';
+    H += '<th>信号</th><th></th>';
+    H += '</tr></thead><tbody>';
+    rows.slice(0, 200).forEach(function (r) {
+      var isAvoid = r.volume_oi_ratio >= 5;
+      var rowCls = isAvoid ? 'fwd-avoid' : (r.signal === 'acc_candidate' ? 'fwd-acc' : '');
+      var marked = !!watch[r.symbol];
+      H += '<tr class="' + rowCls + '">';
+      H += '<td>' + (marked ? '✅' : '') + '</td>';
+      H += '<td class="mono">' + r.symbol.replace('USDT', '') + '</td>';
+      H += '<td class="mono">' + fP(r.price) + '</td>';
+      H += '<td class="' + (r.change_24h_pct >= 0 ? 'up' : 'down') + '">' + fC(r.change_24h_pct) + '</td>';
+      H += '<td class="mono">' + (r.oi_value != null ? (r.oi_value / 1e6).toFixed(1) : '—') + '</td>';
+      H += '<td class="mono">' + (r.volume_oi_ratio != null ? r.volume_oi_ratio.toFixed(1) + 'x' : '—') + '</td>';
+      H += '<td class="mono">' + (r.drawdown_60d != null ? (r.drawdown_60d * 100).toFixed(0) + '%' : '—') + '</td>';
+      H += '<td class="mono">' + (r.range_20d != null ? (r.range_20d * 100).toFixed(0) + '%' : '—') + '</td>';
+      H += '<td class="mono">' + (r.vol_shrink_20d != null ? (r.vol_shrink_20d * 100).toFixed(0) + '%' : '—') + '</td>';
+      H += '<td class="mono">' + (r.near_low_20d != null ? r.near_low_20d.toFixed(2) : '—') + '</td>';
+      H += '<td class="mono">' + (r.funding_rate_pct != null ? r.funding_rate_pct.toFixed(3) + '%' : '—') + '</td>';
+      H += '<td class="mono">' + (r.days_since_listing != null ? r.days_since_listing + 'd' : '—') + '</td>';
+      H += '<td class="mono score">' + (r.forward_score != null ? r.forward_score : '—') + '</td>';
+      H += '<td>' + fwdTagHtml(r) + '</td>';
+      H += '<td><button class="btn btn-sm" onclick="fwdToggleWatch(\'' + r.symbol + '\')">' + (marked ? '取消' : '标记') + '</button></td>';
+      H += '</tr>';
+    });
+    H += '</tbody></table></div>';
+  }
+  H += '<div class="fwd-foot dim">规则来源：@derrrrrrrq 推文校准（2026-08-07）— ①额/OI≥5 是回避信号不是入场信号（验证 fwd5 -1.7%）；②吸筹结构=深底+横盘+缩量+无新低（dn10 3.3% vs 全市场 9.7%）；③推文维度：起势前有大阳线后盘整、吸筹期价格缓涨、有Spring测试更可信、OI 2M-8M 是甜蜜区；④dotyyds1234维度：正资金费高=套利者聚集有肉吃，负费率+拉盘=控盘做空排除；⑤玩新不玩旧：派发后期的旧币自动排除；⑥纯小币筛选器（无 BTC 环境开关）。仅供研究参考，不构成投资建议。</div>';
+  H += '</div>';
+  root.innerHTML = H;
 }
 
 function demonLoad() {
@@ -1412,6 +1722,158 @@ function renderCoinfilter(container) {
   root.innerHTML = H;
   cfSyncInputs();
 }
+
+// ═══════════════════════════════════════════════════════════
+// // 🧭 筛币工作台 视图（第 5 tab）— L0-L5 完整筛币逻辑
+// 数据: GET /api/screener（服务端合并 forward + coinfilter + data，计算环境闸门/排除层/告警）
+// 规则: 硬门槛五要素(下行保护 dn10 3.3%) + 强度分(叙事+1) + 事件回避(-3, fwd5 -1.7%)
+// ═══════════════════════════════════════════════════════════
+var scData = [], scLoaded = false, scTag = '', scSort = 'forward_score', scAsc = false;
+
+var __scSwitchTab = (typeof switchTab === 'function') ? switchTab : null;
+switchTab = function (t) {
+  if (t === 'watchlist') {
+    curTab = t;
+    var tb = document.getElementById('tabbar');
+    if (tb) {
+      tb.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
+      var btn = tb.querySelector('.tab-watchlist');
+      if (btn) btn.classList.add('active');
+    }
+    if (!scLoaded) scLoad(); else renderScreener();
+    return;
+  }
+  if (__scSwitchTab) { __scSwitchTab(t); return; }
+  if (t === 'demon' && typeof renderDemon === 'function') { renderDemon(); return; }
+  if (typeof rD === 'function') rD();
+};
+
+var __scRD = (typeof rD === 'function') ? rD : null;
+rD = function () {
+  if (curTab === 'watchlist') { renderScreener(); return; }
+  if (__scRD) __scRD();
+};
+
+function scLoad() {
+  var root = document.getElementById('root');
+  root.innerHTML = '<div class="empty-msg">🧭 正在加载筛币工作台（L0 环境闸门 + 候选池 + 排除层 + 告警）...</div>';
+  fetch(BASE + '/api/screener').then(function (r) { return r.json(); }).then(function (d) {
+    var rows = d.data || [];
+    if (d.error && !rows.length) throw new Error(d.error);
+    scData = rows;
+    scEnv = d.env || null;
+    scLoaded = true;
+    renderScreener();
+  }).catch(function (err) {
+    root.innerHTML = '<div class="empty-msg">🧭 数据加载失败: ' + e(err.message) + '<br><br><button class="btn" onclick="scLoad()">重试</button></div>';
+  });
+}
+var scEnv = null;
+
+function scFiltered() {
+  var rows = scData.slice();
+  if (scTag === 'acc') rows = rows.filter(function (r) { return r.effective_signal === 'acc_candidate' || r.effective_signal === 'acc_candidate_env_bear'; });
+  else if (scTag === 'avoid') rows = rows.filter(function (r) { return r.event_day || r.forward_signal === 'avoid_event'; });
+  else if (scTag === 'alerts') rows = rows.filter(function (r) { return r.alerts && r.alerts.length > 0; });
+  else if (scTag === 'thin') rows = rows.filter(function (r) { return r.thin_book; });
+  rows.sort(function (a, b) {
+    var va = a[scSort] || 0, vb = b[scSort] || 0;
+    return scAsc ? va - vb : vb - va;
+  });
+  return rows;
+}
+
+function scSetPreset(t) { scTag = t; renderScreener(); }
+function scSortBy(k) { if (scSort === k) scAsc = !scAsc; else { scSort = k; scAsc = false; } renderScreener(); }
+
+function scEnvHtml() {
+  if (!scEnv || scEnv.up == null) return '<div class="fwd-hint fwd-hint-na">L0 环境闸门：未知（候选池冻结，保守）</div>';
+  if (scEnv.up) return '<div class="fwd-hint fwd-hint-bull">L0 环境闸门：🟢 放行（BTC ' + fP(scEnv.close) + ' &gt; SMA20 ' + fP(scEnv.sma20) + '）— 蓄水候选可启用（验证：涨市 +0.8%/胜率56%）</div>';
+  return '<div class="fwd-hint fwd-hint-bear">L0 环境闸门：🔴 冻结（BTC ' + fP(scEnv.close) + ' &lt; SMA20 ' + fP(scEnv.sma20) + '）— 蓄水候选降级为 env_bear，禁止按候选池进场（验证：跌市 -5.3%/胜率31%）</div>';
+}
+
+function scSigTag(r) {
+  var t = [];
+  if (r.effective_signal === 'acc_candidate') t.push('<span class="tag tag-acc">🧭蓄水候选</span>');
+  else if (r.effective_signal === 'acc_candidate_env_bear') t.push('<span class="tag tag-watch">🧭候选(环境冻结)</span>');
+  else if (r.forward_signal === 'avoid_event' || r.event_day) t.push('<span class="tag tag-danger">⛔事件回避</span>');
+  else if (r.forward_signal === 'watch') t.push('<span class="tag tag-watch">👁观察</span>');
+  if (r.thin_book) t.push('<span class="tag tag-watch">⚠️薄盘口</span>');
+  if (r.distribution) t.push('<span class="tag tag-danger">⛔大后期</span>');
+  if (r.kill_longs) t.push('<span class="tag tag-watch">📉杀多</span>');
+  if (r.neg_fund_pump) t.push('<span class="tag tag-danger">⛔负费率拉盘</span>');
+  if (r.tags && r.tags.indexOf('squeeze') >= 0) t.push('<span class="tag tag-danger">🔥挤压</span>');
+  if (r.tags && r.tags.indexOf('small_cap') >= 0) t.push('<span class="tag tag-acc">💎小币</span>');
+  if (r.tags && r.tags.indexOf('early_pump') >= 0) t.push('<span class="tag tag-new">🚀拉升</span>');
+  return t.join(' ');
+}
+
+function scAlertHtml(r) {
+  if (!r.alerts || !r.alerts.length) return '';
+  return r.alerts.map(function (a) { return '<span class="tag tag-new">🔔' + e(a) + '</span>'; }).join(' ');
+}
+
+function renderScreener() {
+  var root = document.getElementById('root');
+  var rows = scFiltered();
+  var nAcc = scData.filter(function (r) { return r.effective_signal === 'acc_candidate' || r.effective_signal === 'acc_candidate_env_bear'; }).length;
+  var nAvoid = scData.filter(function (r) { return r.event_day || r.forward_signal === 'avoid_event'; }).length;
+  var nAlert = scData.filter(function (r) { return r.alerts && r.alerts.length > 0; }).length;
+  var nThin = scData.filter(function (r) { return r.thin_book; }).length;
+
+  var H = '<div class="fwd-wrap">';
+  H += scEnvHtml();
+  H += '<div class="fwd-bar">';
+  H += '<button class="btn' + (scTag === '' ? ' btn-active' : '') + '" onclick="scSetPreset('')">🎯 全部 (' + rows.length + ')</button>';
+  H += '<button class="btn' + (scTag === 'acc' ? ' btn-active' : '') + '" onclick="scSetPreset('acc')">🧭 候选池 (' + nAcc + ')</button>';
+  H += '<button class="btn' + (scTag === 'avoid' ? ' btn-active' : '') + '" onclick="scSetPreset('avoid')">⛔ 回避名单 (' + nAvoid + ')</button>';
+  H += '<button class="btn' + (scTag === 'alerts' ? ' btn-active' : '') + '" onclick="scSetPreset('alerts')">🔔 告警 (' + nAlert + ')</button>';
+  H += '<button class="btn' + (scTag === 'thin' ? ' btn-active' : '') + '" onclick="scSetPreset('thin')">⚠️ 薄盘口 (' + nThin + ')</button>';
+  H += '</div>';
+  H += '<div class="fwd-stats">🧭候选 ' + nAcc + ' · ⛔回避 ' + nAvoid + ' · 🔔告警 ' + nAlert + ' · ⚠️薄盘口 ' + nThin + '</div>';
+
+  if (!rows.length) {
+    H += '<div class="empty-msg">没有符合条件的币。</div>';
+  } else {
+    H += '<div class="table-wrap"><table class="tbl fwd-tbl"><thead><tr>';
+    H += '<th class="sortable" onclick="scSortBy('symbol')">币种</th>';
+    H += '<th class="sortable" onclick="scSortBy('price')">价格</th>';
+    H += '<th class="sortable" onclick="scSortBy('change_24h_pct')">24h%</th>';
+    H += '<th class="sortable" onclick="scSortBy('market_cap')">市值</th>';
+    H += '<th class="sortable" onclick="scSortBy('oi_value')">OI</th>';
+    H += '<th class="sortable" onclick="scSortBy('volume_oi_ratio')">额/OI</th>';
+    H += '<th class="sortable" onclick="scSortBy('funding_rate_pct')">资费%</th>';
+    H += '<th class="sortable" onclick="scSortBy('drawdown_60d')">回撤60d</th>';
+    H += '<th class="sortable" onclick="scSortBy('range_20d')">横盘20d</th>';
+    H += '<th class="sortable" onclick="scSortBy('vol_shrink_20d')">缩量</th>';
+    H += '<th class="sortable" onclick="scSortBy('forward_score')">评分</th>';
+    H += '<th>信号</th><th>告警</th>';
+    H += '</tr></thead><tbody>';
+    rows.slice(0, 300).forEach(function (r) {
+      var isAvoid = r.event_day || r.forward_signal === 'avoid_event';
+      var rowCls = isAvoid ? 'fwd-avoid' : (r.effective_signal === 'acc_candidate' ? 'fwd-acc' : '');
+      H += '<tr class="' + rowCls + '">';
+      H += '<td class="mono"><b>' + e(r.base_asset) + '</b></td>';
+      H += '<td class="mono">' + (r.price != null ? fP(r.price) : '—') + '</td>';
+      H += '<td class="' + ((r.change_24h_pct || 0) >= 0 ? 'up' : 'down') + '">' + (r.change_24h_pct != null ? fC(r.change_24h_pct) : '—') + '</td>';
+      H += '<td class="mono">' + (r.market_cap != null ? '$' + (r.market_cap / 1e6).toFixed(1) + 'M' : '—') + '</td>';
+      H += '<td class="mono">' + (r.oi_value != null ? '$' + (r.oi_value / 1e6).toFixed(1) + 'M' : '—') + '</td>';
+      H += '<td class="mono">' + (r.volume_oi_ratio != null ? r.volume_oi_ratio.toFixed(1) + 'x' : '—') + '</td>';
+      H += '<td class="mono">' + (r.funding_rate_pct != null ? r.funding_rate_pct.toFixed(3) + '%' : '—') + '</td>';
+      H += '<td class="mono">' + (r.drawdown_60d != null ? (r.drawdown_60d * 100).toFixed(0) + '%' : '—') + '</td>';
+      H += '<td class="mono">' + (r.range_20d != null ? (r.range_20d * 100).toFixed(0) + '%' : '—') + '</td>';
+      H += '<td class="mono">' + (r.vol_shrink_20d != null ? (r.vol_shrink_20d * 100).toFixed(0) + '%' : '—') + '</td>';
+      H += '<td class="mono score">' + (r.forward_score != null ? r.forward_score : '—') + '</td>';
+      H += '<td>' + scSigTag(r) + '</td>';
+      H += '<td>' + scAlertHtml(r) + '</td>';
+      H += '</tr>';
+    });
+    H += '</tbody></table></div>';
+  }
+  H += '<div class="fwd-foot dim">L0 环境闸门：BTC vs SMA20（验证：涨市 +0.8%/56%，跌市 -5.3%/31%）· L1 候选池：硬门槛五要素（dn10 3.3% vs 9.7% 下行保护）· L2 排除：事件回避(额/OI≥5, fwd5 -1.7%)/薄盘口/大后期/杀多/负费率拉盘 · L4 告警：ST-Spring/大阳线后盘整/放量+OI跟上/深负资费。叙事因子（大阳线/缓涨/Spring/资费）为 +1 加分，未统计验证。仅供研究参考，不构成投资建议。</div>';
+  H += '</div>';
+  root.innerHTML = H;
+}
 </script>
 </body></html>
 `;
@@ -1458,7 +1920,10 @@ addEventListener('fetch', event => {
   if(path==='/api/relay-demon'&&event.request.method==='POST')return event.respondWith(hRD(event.request,MARKET_DATA));
   if(path==='/api/coinfilter')return event.respondWith(hCF(MARKET_DATA));
   if(path==='/api/relay-coinfilter'&&event.request.method==='POST')return event.respondWith(hRCF(event.request,MARKET_DATA));
+  if(path==='/api/forward')return event.respondWith(hFW(MARKET_DATA));
+  if(path==='/api/relay-forward'&&event.request.method==='POST')return event.respondWith(hRWF(event.request,MARKET_DATA));
   if(path==='/api/mentioned')return event.respondWith(hML(MARKET_DATA));
+  if(path==='/api/screener')return event.respondWith(hSC(MARKET_DATA));
   if(path==='/api/status')return event.respondWith(hST(MARKET_DATA));
   event.respondWith(hDB(MARKET_DATA));
 });
@@ -1474,6 +1939,65 @@ async function hRD(req,kv){const k=DEMON_RELAY_KEY,a=req.headers.get('X-Auth-Key
 async function hDM(kv){const r=await kv.get('demon_data');if(!r)return json({ok:false,error:'no demon data',data:[],updated:null});const p=JSON.parse(r);const arr=Array.isArray(p)?p:p.data||[];return json({ok:true,updated:p.updated||null,data:arr,count:p.count||arr.length})}
 async function hRCF(req,kv){const k=DEMON_RELAY_KEY,a=req.headers.get('X-Auth-Key');if(!k||a!==k)return json({ok:false,error:'Unauthorized'},401);try{const b=await req.json();if(!b||!Array.isArray(b.data))return json({ok:false,error:'Must be {data:[...]}'},400);const n=b.updated||new Date().toISOString();await kv.put('coinfilter_data',JSON.stringify({data:b.data,updated:n,count:b.data.length}));if(Array.isArray(b.mentioned)&&b.mentioned.length>0){await kv.put('mentioned_list',JSON.stringify(b.mentioned)).catch(()=>{})}return json({ok:true,coins:b.data.length,updated:n})}catch(e){return json({ok:false,error:e.message},400)}}
 async function hCF(kv){const r=await kv.get('coinfilter_data');if(!r)return json({ok:false,error:'no coinfilter data',data:[],updated:null,count:0});const p=JSON.parse(r);const arr=Array.isArray(p)?p:p.data||[];return json({ok:true,updated:p.updated||null,count:p.count||arr.length,data:arr})}
+async function hRWF(req,kv){const k=DEMON_RELAY_KEY,a=req.headers.get('X-Auth-Key');if(!k||a!==k)return json({ok:false,error:'Unauthorized'},401);try{const b=await req.json();if(!b||!Array.isArray(b.data))return json({ok:false,error:'Must be {data:[...]}'},400);const n=b.updated||new Date().toISOString();const payload={data:b.data,updated:n,count:b.data.length,env:b.env||null};await kv.put('forward_data',JSON.stringify(payload));return json({ok:true,coins:b.data.length,updated:n})}catch(e){return json({ok:false,error:e.message},400)}
+}
+async function hFW(kv){const r=await kv.get('forward_data');if(!r)return json({ok:false,error:'no forward data',data:[],updated:null,count:0});const p=JSON.parse(r);const arr=Array.isArray(p)?p:p.data||[];return json({ok:true,updated:p.updated||null,count:p.count||arr.length,env:p.env||null,data:arr})}
 async function hML(kv){const r=await kv.get('mentioned_list');if(!r)return json({ok:false,error:'no mentioned list',mentioned:[]});try{return json({ok:true,mentioned:JSON.parse(r)})}catch(e){return json({ok:false,error:e.message,mentioned:[]})}}
-async function hST(kv){const r=await kv.get('data'),u=await kv.get('last_updated'),c=await kv.get('count'),dr=await kv.get('demon_data'),cr=await kv.get('coinfilter_data');let dc=0,du=null,cc=0,cu=null;if(dr){try{const dp=JSON.parse(dr);dc=dp.count||(Array.isArray(dp)?dp.length:0);du=dp.updated||null}catch(e){}}if(cr){try{const cp=JSON.parse(cr);cc=cp.count||(Array.isArray(cp)?cp.length:0);cu=cp.updated||null}catch(e){}}const ml=await kv.get('mentioned_list');let mentioned=[];if(ml){try{mentioned=JSON.parse(ml)}catch(e){}}return json({project:'筹码筛选',ok:!!r,coins:parseInt(c||'0'),updated:u,demon:{ok:!!dr,coins:parseInt(dc||'0'),updated:du},coinfilter:{ok:!!cr,coins:parseInt(cc||'0'),updated:cu},mentioned:mentioned})}
+// 📡 他提过：合并 data(市值/量) + coinfilter(OI/资费/信号) + forward(吸筹评分)，按名单过滤
+// 🧭 筛币工作台：L0 环境闸门 + L1 候选池 + L2 排除层 + L4 告警（服务端计算）
+// 数据源: forward(吸筹结构/评分) + coinfilter(OI/资费/盘口/信号) + data(市值)
+// 规则: 硬门槛五要素(下行保护验证 dn10 3.3%) + 强度分(叙事因子+1) + 事件回避(-3, fwd5 -1.7% 强验证)
+async function hSC(kv){
+  const [dr,cr,fr]=await Promise.all([kv.get('data'),kv.get('coinfilter_data'),kv.get('forward_data')]);
+  const base={};if(dr){try{const p=JSON.parse(dr);(Array.isArray(p)?p:p.data||[]).forEach(c=>{if(c.base_asset)base[c.base_asset]={market_cap:c.market_cap,volume_24h_usdt:c.volume_24h_usdt,cmc_rank:c.cmc_rank,circulating_ratio:c.circulating_ratio,unlock_risk:c.unlock_risk}})}catch(e){}}
+  const cf={};if(cr){try{const p=JSON.parse(cr);(Array.isArray(p)?p:p.data||[]).forEach(c=>{if(c.base_asset)cf[c.base_asset]=c})}catch(e){}}
+  const fw={};if(fr){try{const p=JSON.parse(fr);(Array.isArray(p)?p:p.data||[]).forEach(c=>{if(c.base_asset)fw[c.base_asset]=c})}catch(e){}}
+  let env=null;try{const p=JSON.parse(fr||'{}');env=p.env||null}catch(e){}
+  const envUp = env ? env.up : null;
+  const rows=[];
+  const allSyms=new Set([...Object.keys(cf),...Object.keys(fw)]);
+  for(const sym of allSyms){
+    const c=cf[sym]||{},f=fw[sym]||{},b=base[sym]||{};
+    const oi=c.oi_value!=null?c.oi_value:(f.oi_value!=null?f.oi_value:null);
+    const volOi=c.volume_oi_ratio!=null?c.volume_oi_ratio:(f.volume_oi_ratio!=null?f.volume_oi_ratio:null);
+    const fund=c.funding_rate_pct!=null?c.funding_rate_pct:(f.funding_rate_pct!=null?f.funding_rate_pct:null);
+    const chg=c.change_24h_pct!=null?c.change_24h_pct:(f.change_24h_pct!=null?f.change_24h_pct:null);
+    const price=c.price!=null?c.price:(f.price!=null?f.price:null);
+    const vol=c.volume_24h_usdt!=null?c.volume_24h_usdt:(b.volume_24h_usdt!=null?b.volume_24h_usdt:null);
+    const score=f.forward_score!=null?f.forward_score:0;
+    const sig=f.signal||'noise';
+    // L0 环境闸门：环境向下时 acc_candidate 降级
+    let effSig=sig;
+    if(sig==='acc_candidate'&&envUp===false)effSig='acc_candidate_env_bear';
+    // L2 排除层
+    const thinBook=c.orderbook_depth_usdt!=null&&c.orderbook_depth_usdt<200000;
+    const distribution=oi!=null&&volOi!=null&&chg!=null&&oi>80e6&&volOi<3&&chg<-10;
+    const killLongs=oi!=null&&chg!=null&&chg<-5;
+    const eventDay=volOi!=null&&volOi>=5;
+    const negFundPump=fund!=null&&fund<-0.05&&chg!=null&&chg>0;
+    // L4 告警（基于当前快照可算的）
+    const alerts=[];
+    if(f.spring_test)alerts.push('ST/Spring');
+    if(f.breakout_consolidation)alerts.push('大阳线后盘整');
+    if(c.oi_24h_change_pct!=null&&c.oi_24h_change_pct>2&&volOi!=null&&volOi>=5)alerts.push('放量+OI跟上');
+    if(fund!=null&&fund<-0.05)alerts.push('深负资费');
+    rows.push({
+      symbol:sym,base_asset:sym.replace('USDT',''),
+      price,change_24h_pct:chg,volume_24h_usdt:vol,
+      market_cap:b.market_cap!=null?b.market_cap:null,
+      oi_value:oi,volume_oi_ratio:volOi,funding_rate_pct:fund,
+      orderbook_depth_usdt:c.orderbook_depth_usdt!=null?c.orderbook_depth_usdt:null,
+      oi_stage_label:c.oi_stage_label||null,tags:c.tags||[],
+      forward_score:score,forward_signal:sig,effective_signal:effSig,
+      drawdown_60d:f.drawdown_60d,range_20d:f.range_20d,vol_shrink_20d:f.vol_shrink_20d,
+      near_low_20d:f.near_low_20d,big_move_5d:f.big_move_5d,
+      spring_test:!!f.spring_test,breakout_consolidation:!!f.breakout_consolidation,
+      oi_24h_change_pct:c.oi_24h_change_pct!=null?c.oi_24h_change_pct:null,
+      thin_book:thinBook,distribution,kill_longs:killLongs,event_day:eventDay,neg_fund_pump:negFundPump,
+      alerts
+    });
+  }
+  return json({ok:true,updated:new Date().toISOString(),count:rows.length,env:env,data:rows});
+}
+async function hST(kv){const r=await kv.get('data'),u=await kv.get('last_updated'),c=await kv.get('count'),dr=await kv.get('demon_data'),cr=await kv.get('coinfilter_data'),fw=await kv.get('forward_data');let dc=0,du=null,cc=0,cu=null;if(dr){try{const dp=JSON.parse(dr);dc=dp.count||(Array.isArray(dp)?dp.length:0);du=dp.updated||null}catch(e){}}if(cr){try{const cp=JSON.parse(cr);cc=cp.count||(Array.isArray(cp)?cp.length:0);cu=cp.updated||null}catch(e){}}const ml=await kv.get('mentioned_list');let mentioned=[];if(ml){try{mentioned=JSON.parse(ml)}catch(e){}}return json({project:'筹码筛选',ok:!!r,coins:parseInt(c||'0'),updated:u,demon:{ok:!!dr,coins:parseInt(dc||'0'),updated:du},coinfilter:{ok:!!cr,coins:parseInt(cc||'0'),updated:cu},forward:{ok:!!fw,coins:fw?(()=>{try{return JSON.parse(fw).count||0}catch(e){return 0}})():0,updated:fw?(()=>{try{return JSON.parse(fw).updated||null}catch(e){return null}})():null},mentioned:mentioned})}
 async function hDD(kv){const eps=[{n:'BN',u:'https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT'},{n:'BN spot',u:'https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT'},{n:'BB',u:'https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT'},{n:'OKX',u:'https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT-SWAP'}];const r={};for(const ep of eps){const c=new AbortController,t=setTimeout(()=>c.abort(),1e4);try{const res=await fetch(ep.u,{signal:c.signal});clearTimeout(t);const txt=await res.text().catch(()=>'');r[ep.n]={s:res.status,p:txt.slice(0,100)}}catch(e){clearTimeout(t);r[ep.n]={e:e.message}}}await kv.put('debug_exchange',JSON.stringify(r)).catch(()=>{});return json(r)}
