@@ -927,6 +927,8 @@ async function relayForward(binanceRows) {
   const listingMap = await fetchListingDates();
   // dotyyds1234 维度：资金费（premiumIndex 批量 1 请求，权重低）
   const fundingMap = await fetchFundingRates(syms);
+  // BTC 方向提示（仅展示，不参与评分/筛选）
+  const btcEnv = await fetchBtcEnv();
   console.log(`Forward: klines=${klineMap.size} oiHist=${oiHistMap.size} funding=${fundingMap.size}`);
 
   const payload = [];
@@ -1038,7 +1040,7 @@ async function relayForward(binanceRows) {
     const resp = await fetch(FORWARD_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Auth-Key': FORWARD_RELAY_KEY },
-      body: JSON.stringify({ data: payload }),
+      body: JSON.stringify({ data: payload, env: btcEnv }),
       signal: controller.signal,
     });
     const result = await resp.json();
