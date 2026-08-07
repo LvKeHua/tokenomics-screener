@@ -924,11 +924,10 @@ async function relayForward(binanceRows) {
   });
   const klineMap = await fetchKlineHistory(syms);
   const oiHistMap = await fetchOiHistory(oiRangeSyms);
-  const btcEnv = await fetchBtcEnv();
   const listingMap = await fetchListingDates();
   // dotyyds1234 维度：资金费（premiumIndex 批量 1 请求，权重低）
   const fundingMap = await fetchFundingRates(syms);
-  console.log(`Forward: klines=${klineMap.size} oiHist=${oiHistMap.size} funding=${fundingMap.size} env=${btcEnv.up}`);
+  console.log(`Forward: klines=${klineMap.size} oiHist=${oiHistMap.size} funding=${fundingMap.size}`);
 
   const payload = [];
   for (const r of sorted) {
@@ -953,9 +952,9 @@ async function relayForward(binanceRows) {
       oi_stage: computeOiStage(oiValue).stage,
       oi_stage_label: computeOiStage(oiValue).label,
       days_since_listing: listing ? listing.days_since_listing : null,
-      btc_env_up: btcEnv.up,
-      btc_close: btcEnv.close,
-      btc_sma20: btcEnv.sma20,
+      btc_env_up: null,
+      btc_close: null,
+      btc_sma20: null,
       oi_pctile_30d: null,
       drawdown_60d: null,
       range_20d: null,
@@ -1024,9 +1023,8 @@ async function relayForward(binanceRows) {
       }
     }
     f.forward_score = computeForwardScore(f);
-    // 信号：吸筹结构候选（结构成立 + 评分≥4，含推文维度；环境向上时才是可执行候选）
-    if (f.forward_score >= 4 && f.btc_env_up === true) f.signal = 'acc_candidate';
-    else if (f.forward_score >= 4 && f.btc_env_up === false) f.signal = 'acc_candidate_env_bear';
+    // 信号：吸筹结构候选（结构成立 + 评分≥4，纯小币维度，无 BTC 环境开关）
+    if (f.forward_score >= 4) f.signal = 'acc_candidate';
     else if (f.volume_oi_ratio >= 5) f.signal = 'avoid_event';
     else if (f.forward_score > 0) f.signal = 'watch';
     else f.signal = 'noise';
@@ -1040,12 +1038,12 @@ async function relayForward(binanceRows) {
     const resp = await fetch(FORWARD_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Auth-Key': FORWARD_RELAY_KEY },
-      body: JSON.stringify({ data: payload, env: btcEnv }),
+      body: JSON.stringify({ data: payload }),
       signal: controller.signal,
     });
     const result = await resp.json();
     if (resp.ok && result.ok) {
-      console.log(`Forward relay OK: ${result.coins} coins, env=${btcEnv.up} — updated ${result.updated}`);
+      console.log(`Forward relay OK: ${result.coins} coins — updated ${result.updated}`);
     } else {
       console.error(`Forward relay error (HTTP ${resp.status}):`, JSON.stringify(result));
     }
