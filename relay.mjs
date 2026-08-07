@@ -533,8 +533,11 @@ async function fetchFundingRates(symbols) {
 async function fetchOrderbookDepths(symbols) {
   const results = new Map();
   let idx = 0;
+  const started = Date.now();
   async function worker() {
     while (idx < symbols.length) {
+      // 整体超时 120s：防止 418 封禁时无限重试拖垮整条管线
+      if (Date.now() - started > 120000) return;
       const sym = symbols[idx++];
       let attempt = 0;
       while (attempt < 2) {
@@ -870,8 +873,11 @@ async function fetchBtcEnv() {
 async function fetchKlineHistory(symbols) {
   const results = new Map();
   let idx = 0;
+  const started = Date.now();
   async function worker() {
     while (idx < symbols.length) {
+      // 整体超时 120s：防止网络抖动时无限等待拖垮整条管线
+      if (Date.now() - started > 120000) return;
       const sym = symbols[idx++];
       try {
         const k = await fetchBinanceApi(`/fapi/v1/klines?symbol=${sym}&interval=1d&limit=${FORWARD_KLINES_LIMIT}`);
@@ -887,8 +893,11 @@ async function fetchKlineHistory(symbols) {
 async function fetchOiHistory(symbols) {
   const results = new Map();
   let idx = 0;
+  const started = Date.now();
   async function worker() {
     while (idx < symbols.length) {
+      // 整体超时 120s
+      if (Date.now() - started > 120000) return;
       const sym = symbols[idx++];
       try {
         const h = await fetchBinanceApi(`/futures/data/openInterestHist?symbol=${sym}&period=1d&limit=31`);
