@@ -820,17 +820,17 @@ async function main() {
     // 全市场聚合：OI = Binance(逐合约) + Bybit(ticker自带) + OKX(全量接口)
     const okxOiMap = await fetchOkxOi().catch(() => new Map());
     const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
-    await relayDemon(payload.binance, agg);
+    await relayDemon(payload.binance, agg).catch(e => console.error('Demon relay failed:', e.message));
   }
 
   // 小币筛选数据（基于本次 Binance ticker）
   if (payload.binance) {
-    await relayCoinfilter(payload.binance, null, null, null, null, agg);
+    await relayCoinfilter(payload.binance, null, null, null, null, agg).catch(e => console.error('Coinfilter relay failed:', e.message));
   }
 
   // 前导筛选数据（基于本次 Binance ticker）
   if (payload.binance) {
-    await relayForward(payload.binance, process.env.DEBUG, agg);
+    await relayForward(payload.binance, process.env.DEBUG, agg).catch(e => console.error('Forward relay failed:', e.message));
   }
 }
 
