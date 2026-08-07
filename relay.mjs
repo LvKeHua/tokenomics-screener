@@ -167,6 +167,7 @@ async function fetchBybit() {
         change_24h_pct: Math.round(pcnt * 100) / 100,
         amplitude_24h_pct: Math.round(((high - low) / price) * 100 * 100) / 100,
         volume_24h_usdt: parseFloat(t.turnover24h || '0'),
+        open_interest_value: parseFloat(t.openInterestValue || '0'),
       });
     }
     return rows;
@@ -204,6 +205,29 @@ async function fetchOkx() {
       });
     }
     return rows;
+  } finally { clearTimeout(timer); }
+}
+
+// -- OKX OI 全量（1 请求，不带 instId 返回全部 SWAP 合约 OI）----------------
+async function fetchOkxOi() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await proxiedFetch('https://www.okx.com/api/v5/public/open-interest?instType=SWAP', { signal: controller.signal });
+    if (!res.ok) throw new Error(`OKX OI HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.data) return new Map();
+    const m = new Map();
+    for (const t of data.data) {
+      if (!t.instId.endsWith('-USDT-SWAP')) continue;
+      const ba = t.instId.replace('-USDT-SWAP', '');
+      const oi = parseFloat(t.oi || '0');
+      const oiCcy = parseFloat(t.oiCcy || '0');
+      if (isNaN(oi) || oi <= 0) continue;
+      // oi = 张数，oiCcy = 币数；USD 值 = 币数 × 价格（用 ticker 价格在聚合时算）
+      m.set(ba + 'USDT', { contracts: oi, coin: oiCcy });
+    }
+    return m;
   } finally { clearTimeout(timer); }
 }
 
@@ -266,7 +290,7 @@ async function fetchOpenInterest(symbols) {
   return results;
 }
 
-async function relayDemon(binanceRows) {
+async function relayDemon(binanceRows, agg) {
   if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
     console.log('Demon: no binance rows, skip');
     return;
@@ -281,7 +305,11 @@ async function relayDemon(binanceRows) {
   for (const r of sorted) {
     const oi = oiMap.get(r.symbol);
     if (oi == null) continue;
-    const oiValue = oi * r.price;
+    // 全市场聚合：OI = Binance + Bybit + OKX；交易量 = 三所之和
+    const aggOi = agg && agg.oi ? (agg.oi.get(r.symbol) || 0) : 0;
+    const aggVol = agg && agg.vol ? (agg.vol.get(r.symbol) || 0) : 0;
+    const oiValue = oi * r.price + aggOi;
+    const volUsdt = aggVol > 0 ? aggVol : r.volume_24h_usdt;
     const stage = computeOiStage(oiValue);
     payload.push({
       symbol: r.symbol,
@@ -289,11 +317,11 @@ async function relayDemon(binanceRows) {
       price: r.price,
       change_24h_pct: r.change_24h_pct,
       amplitude_24h_pct: r.amplitude_24h_pct,
-      volume_24h_usdt: r.volume_24h_usdt,
+      volume_24h_usdt: Math.round(volUsdt * 100) / 100,
       trade_count: r.trade_count || 0,
       oi_value: Math.round(oiValue * 100) / 100,
       oi_contracts: oi,
-      volume_oi_ratio: oiValue > 0 ? Math.round((r.volume_24h_usdt / oiValue) * 10000) / 10000 : 0,
+      volume_oi_ratio: oiValue > 0 ? Math.round((volUsdt / oiValue) * 10000) / 10000 : 0,
       oi_stage: stage.stage,
       oi_stage_label: stage.label,
     });
@@ -584,7 +612,7 @@ function computeCoinfilterTags(r, oiValue, volumeOiRatio, fundingRatePct, depthU
   return tags;
 }
 
-async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listingMap) {
+async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listingMap, agg) {
   if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
     console.log('Coinfilter: no binance rows, skip');
     return;
@@ -632,8 +660,12 @@ async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listing
   for (const r of sorted) {
     const oi = oiMap.get(r.symbol);
     if (oi == null) continue;
-    const oiValue = oi * r.price;
-    const volumeOiRatio = oiValue > 0 ? r.volume_24h_usdt / oiValue : 0;
+    // 全市场聚合：OI = Binance + Bybit + OKX；交易量 = 三所之和
+    const aggOi = agg && agg.oi ? (agg.oi.get(r.symbol) || 0) : 0;
+    const aggVol = agg && agg.vol ? (agg.vol.get(r.symbol) || 0) : 0;
+    const oiValue = oi * r.price + aggOi;
+    const volUsdt = aggVol > 0 ? aggVol : r.volume_24h_usdt;
+    const volumeOiRatio = oiValue > 0 ? volUsdt / oiValue : 0;
     const fundingRatePct = fundingMap.get(r.symbol);
     const depthUsdt = depthMap.get(r.symbol);
     const listing = listingMap.get(r.symbol);
@@ -645,7 +677,7 @@ async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listing
       price: r.price,
       change_24h_pct: r.change_24h_pct,
       amplitude_24h_pct: r.amplitude_24h_pct,
-      volume_24h_usdt: r.volume_24h_usdt,
+      volume_24h_usdt: Math.round(volUsdt * 100) / 100,
       oi_value: Math.round(oiValue * 100) / 100,
       oi_contracts: oi,
       volume_oi_ratio: Math.round(volumeOiRatio * 10000) / 10000,
@@ -687,6 +719,40 @@ async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listing
   } catch (e) {
     console.error('Coinfilter relay failed:', e.message);
   } finally { clearTimeout(timer); }
+}
+
+// ── 全市场聚合：交易量 = Binance+Bybit+OKX 三所之和；OI = 三所 OI 之和 ──
+// 输入: binanceRows(含 OI 现值) + bybitRows(含 open_interest_value) + okxRows + okxOiMap
+// 输出: Map<symbol, { volume_24h_usdt, oi_value, oi_contracts }>
+function aggregateMarket(binanceRows, bybitRows, okxRows, okxOiMap) {
+  const vol = new Map();   // symbol -> 三所 24h 交易量之和
+  const oi = new Map();    // symbol -> 三所 OI 现值之和(USD)
+  const price = new Map(); // symbol -> Binance 价格(基准)
+  for (const r of binanceRows) {
+    vol.set(r.symbol, r.volume_24h_usdt || 0);
+    price.set(r.symbol, r.price);
+  }
+  for (const r of bybitRows || []) {
+    vol.set(r.symbol, (vol.get(r.symbol) || 0) + (r.volume_24h_usdt || 0));
+  }
+  for (const r of okxRows || []) {
+    vol.set(r.symbol, (vol.get(r.symbol) || 0) + (r.volume_24h_usdt || 0));
+  }
+  // OI: Binance 现值在调用方传入（oiMap），这里只聚合 Bybit/OKX 增量
+  for (const r of bybitRows || []) {
+    if (r.open_interest_value && r.open_interest_value > 0) {
+      oi.set(r.symbol, (oi.get(r.symbol) || 0) + r.open_interest_value);
+    }
+  }
+  if (okxOiMap) {
+    for (const [sym, v] of okxOiMap) {
+      const p = price.get(sym);
+      if (p && v.coin > 0) {
+        oi.set(sym, (oi.get(sym) || 0) + v.coin * p);
+      }
+    }
+  }
+  return { vol, oi, price };
 }
 
 async function main() {
@@ -749,19 +815,22 @@ async function main() {
     console.error('Tickers relay failed:', e.message);
   } finally { clearTimeout(timer); }
 
-  // 妖币扫描数据（基于本次 Binance ticker）
+  // 妖币扫描数据（基于本次 Binance ticker + 全市场聚合）
   if (payload.binance) {
-    await relayDemon(payload.binance);
+    // 全市场聚合：OI = Binance(逐合约) + Bybit(ticker自带) + OKX(全量接口)
+    const okxOiMap = await fetchOkxOi().catch(() => new Map());
+    const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
+    await relayDemon(payload.binance, agg);
   }
 
   // 小币筛选数据（基于本次 Binance ticker）
   if (payload.binance) {
-    await relayCoinfilter(payload.binance);
+    await relayCoinfilter(payload.binance, null, null, null, null, agg);
   }
 
   // 前导筛选数据（基于本次 Binance ticker）
   if (payload.binance) {
-    await relayForward(payload.binance, process.env.DEBUG);
+    await relayForward(payload.binance, process.env.DEBUG, agg);
   }
 }
 
@@ -901,7 +970,7 @@ function computeForwardScore(f) {
   return s;
 }
 
-async function relayForward(binanceRows) {
+async function relayForward(binanceRows, debug, agg) {
   if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
     console.log('Forward: no binance rows, skip');
     return;
@@ -935,8 +1004,12 @@ async function relayForward(binanceRows) {
   for (const r of sorted) {
     const oi = oiMap.get(r.symbol);
     if (oi == null) continue;
-    const oiValue = oi * r.price;
-    const volumeOiRatio = oiValue > 0 ? r.volume_24h_usdt / oiValue : 0;
+    // 全市场聚合：OI = Binance + Bybit + OKX；交易量 = 三所之和
+    const aggOi = agg && agg.oi ? (agg.oi.get(r.symbol) || 0) : 0;
+    const aggVol = agg && agg.vol ? (agg.vol.get(r.symbol) || 0) : 0;
+    const oiValue = oi * r.price + aggOi;
+    const volUsdt = aggVol > 0 ? aggVol : r.volume_24h_usdt;
+    const volumeOiRatio = oiValue > 0 ? volUsdt / oiValue : 0;
     const k = klineMap.get(r.symbol);
     const h = oiHistMap.get(r.symbol);
     const listing = listingMap.get(r.symbol);
@@ -947,7 +1020,7 @@ async function relayForward(binanceRows) {
       price: r.price,
       change_24h_pct: r.change_24h_pct,
       amplitude_24h_pct: r.amplitude_24h_pct,
-      volume_24h_usdt: r.volume_24h_usdt,
+      volume_24h_usdt: Math.round(volUsdt * 100) / 100,
       oi_value: Math.round(oiValue * 100) / 100,
       oi_contracts: oi,
       volume_oi_ratio: Math.round(volumeOiRatio * 10000) / 10000,
