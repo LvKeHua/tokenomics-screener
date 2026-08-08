@@ -1764,6 +1764,8 @@ function renderCoinfilter(container) {
 // 规则: 硬门槛五要素(下行保护 dn10 3.3%) + 强度分(叙事+1) + 事件回避(-3, fwd5 -1.7%)
 // ═══════════════════════════════════════════════════════════
 var scData = [], scLoaded = false, scTag = '', scSort = 'forward_score', scAsc = false;
+// OI 范围自定义（客户端过滤，默认不设限 = 全市场，逻辑不变）
+var scOiMin = null, scOiMax = null;
 
 var __scSwitchTab = (typeof switchTab === 'function') ? switchTab : null;
 switchTab = function (t) {
@@ -1822,11 +1824,33 @@ function scFiltered() {
   else if (scTag === 'avoid') rows = rows.filter(function (r) { return r.event_day || r.forward_signal === 'avoid_event'; });
   else if (scTag === 'alerts') rows = rows.filter(function (r) { return r.alerts && r.alerts.length > 0; });
   else if (scTag === 'thin') rows = rows.filter(function (r) { return r.thin_book; });
+  // OI 范围过滤（默认不设限）
+  if (scOiMin != null) rows = rows.filter(function (r) { return (r.oi_value || 0) >= scOiMin; });
+  if (scOiMax != null) rows = rows.filter(function (r) { return (r.oi_value || 0) <= scOiMax; });
   rows.sort(function (a, b) {
     var va = a[scSort] || 0, vb = b[scSort] || 0;
     return scAsc ? va - vb : vb - va;
   });
   return rows;
+}
+
+// OI 范围控件
+function scSetOiRange() {
+  var minEl = document.getElementById('sc-oi-min');
+  var maxEl = document.getElementById('sc-oi-max');
+  var minV = minEl ? parseFloat(minEl.value) : NaN;
+  var maxV = maxEl ? parseFloat(maxEl.value) : NaN;
+  scOiMin = !isNaN(minV) && minV > 0 ? minV * 1e6 : null;
+  scOiMax = !isNaN(maxV) && maxV > 0 ? maxV * 1e6 : null;
+  renderScreener();
+}
+function scClearOiRange() {
+  scOiMin = null; scOiMax = null;
+  var minEl = document.getElementById('sc-oi-min');
+  var maxEl = document.getElementById('sc-oi-max');
+  if (minEl) minEl.value = '';
+  if (maxEl) maxEl.value = '';
+  renderScreener();
 }
 
 function scSetPreset(t) { scTag = t; renderScreener(); }
@@ -1875,6 +1899,14 @@ function renderScreener() {
   H += '<button class="btn' + (scTag === 'avoid' ? ' btn-active' : '') + '" onclick="scSetPreset(\'avoid\')">⛔ 回避名单 (' + nAvoid + ')</button>';
   H += '<button class="btn' + (scTag === 'alerts' ? ' btn-active' : '') + '" onclick="scSetPreset(\'alerts\')">🔔 告警 (' + nAlert + ')</button>';
   H += '<button class="btn' + (scTag === 'thin' ? ' btn-active' : '') + '" onclick="scSetPreset(\'thin\')">⚠️ 薄盘口 (' + nThin + ')</button>';
+  H += '</div>';
+  H += '<div class="fwd-bar" style="flex-wrap:wrap;gap:6px;align-items:center">';
+  H += '<span class="dim">OI 范围 (USDT):</span>';
+  H += '<input id="sc-oi-min" type="number" placeholder="最小 M" style="width:90px;padding:4px 6px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" value="' + (scOiMin != null ? (scOiMin / 1e6) : '') + '" onchange="scSetOiRange()">';
+  H += '<span class="dim">—</span>';
+  H += '<input id="sc-oi-max" type="number" placeholder="最大 M" style="width:90px;padding:4px 6px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" value="' + (scOiMax != null ? (scOiMax / 1e6) : '') + '" onchange="scSetOiRange()">';
+  H += '<button class="btn btn-sm" onclick="scClearOiRange()">清除</button>';
+  H += '<span class="dim">(空 = 不设限，全市场；逻辑不变)</span>';
   H += '</div>';
   H += '<div class="fwd-stats">🧭候选 ' + nAcc + ' · ⛔回避 ' + nAvoid + ' · 🔔告警 ' + nAlert + ' · ⚠️薄盘口 ' + nThin + '</div>';
 
