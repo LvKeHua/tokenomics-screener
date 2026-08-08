@@ -1867,11 +1867,12 @@ function renderScreener() {
   H += '</div>';
   H += '<div class="fwd-bar" style="flex-wrap:wrap;gap:6px;align-items:center">';
   H += '<span class="dim">OI 范围 (USDT):</span>';
-  H += '<input id="sc-oi-min" type="number" placeholder="最小 M" style="width:90px;padding:4px 6px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" value="' + (scOiMin != null ? (scOiMin / 1e6) : '') + '" onchange="scSetOiRange()">';
+  H += '<input id="sc-oi-min" type="number" placeholder="最小 M" style="width:90px;padding:4px 6px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" value="' + (scOiMin != null ? (scOiMin / 1e6) : '') + '" onkeydown="if(event.key===' + "'Enter'" + ')scSetOiRange()">';
   H += '<span class="dim">—</span>';
-  H += '<input id="sc-oi-max" type="number" placeholder="最大 M" style="width:90px;padding:4px 6px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" value="' + (scOiMax != null ? (scOiMax / 1e6) : '') + '" onchange="scSetOiRange()">';
+  H += '<input id="sc-oi-max" type="number" placeholder="最大 M" style="width:90px;padding:4px 6px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" value="' + (scOiMax != null ? (scOiMax / 1e6) : '') + '" onkeydown="if(event.key===' + "'Enter'" + ')scSetOiRange()">';
+  H += '<button class="btn btn-sm" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;font-weight:700" onclick="scSetOiRange()">✓ 确定</button>';
   H += '<button class="btn btn-sm" onclick="scClearOiRange()">清除</button>';
-  H += '<span class="dim">(空 = 不设限，全市场；逻辑不变)</span>';
+  H += '<span class="dim" id="sc-oi-status">' + (scOiMin != null || scOiMax != null ? '🔍 已过滤 OI ' + (scOiMin != null ? (scOiMin/1e6) : '0') + 'M ~ ' + (scOiMax != null ? (scOiMax/1e6) : '∞') + 'M' : '未过滤（全市场）') + '</span>';
   H += '</div>';
   H += '<div class="fwd-stats">🧭候选 ' + nAcc + ' · ⛔回避 ' + nAvoid + ' · 🔔告警 ' + nAlert + ' · ⚠️薄盘口 ' + nThin + '</div>';
 
