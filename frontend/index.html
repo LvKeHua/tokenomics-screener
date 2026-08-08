@@ -427,6 +427,42 @@ tr.cf-row-click:hover td{background:rgba(255,255,255,0.035)}
 .tag-noise{opacity:.35}
 .fwd-foot{font-size:11px;padding-top:8px;border-top:1px solid var(--border,#ffffff22)}
 .score{font-weight:700}
+/* ═══════════ UI 增强层（纯视觉，不动逻辑）═══════════ */
+body{scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.3) transparent}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(148,163,184,.25);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,.45)}
+#tabbar{position:sticky;top:0;z-index:100;background:linear-gradient(180deg,rgba(11,17,32,.97),rgba(11,17,32,.85));backdrop-filter:blur(12px);padding:10px 0 12px;border-bottom:1px solid rgba(255,255,255,.05)}
+#tabbar .tab-btn{transition:transform .2s cubic-bezier(.4,0,.2,1),box-shadow .2s,border-color .2s,background .2s}
+#tabbar .tab-btn:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(59,130,246,.25)}
+#tabbar .tab-btn.active{transform:translateY(-1px)}
+.tab-btn{transition:transform .2s cubic-bezier(.4,0,.2,1),box-shadow .2s,border-color .2s,background .2s}
+.tab-btn:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(59,130,246,.2)}
+.tab-btn.active{box-shadow:0 0 20px rgba(59,130,246,.3)}
+table{animation:fadeIn .3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+tr{transition:background .15s}
+tbody tr:hover td{background:rgba(59,130,246,.06)!important}
+th{background:#141a26;user-select:none}
+th.sortable:hover{color:#60a5fa}
+.btn{transition:transform .15s,box-shadow .2s,border-color .2s,background .2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(59,130,246,.25)}
+.btn:active{transform:translateY(0) scale(.97)}
+.btn-sm{transition:transform .15s,background .15s}
+.btn-sm:hover{transform:scale(1.05)}
+.fwd-env,.fwd-hint{transition:opacity .3s}
+.status-bar{animation:fadeIn .3s ease}
+.app-header{animation:fadeIn .4s ease}
+.kpi-card{transition:transform .2s,box-shadow .2s,border-color .2s}
+.kpi-card:hover{transform:translateY(-3px);box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.filter-card{transition:border-color .2s,box-shadow .2s}
+.filter-card:hover{border-color:rgba(59,130,246,.35);box-shadow:0 2px 12px rgba(59,130,246,.08)}
+.preset-btn{transition:transform .2s,filter .2s,box-shadow .2s}
+.preset-btn:hover{transform:translateY(-2px) scale(1.02);filter:brightness(1.15)}
+.tag,.sig-badge,.cf-stat-chip{transition:transform .15s}
+.tag:hover,.sig-badge:hover,.cf-stat-chip:hover{transform:scale(1.08)}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head><body>
 <div id="tabbar"><button class="tab-btn tab-chip active" onclick="switchTab('chip')">🧲 筹码筛选</button><button class="tab-btn tab-demon" onclick="switchTab('demon')">👺 妖币扫描</button><button class="tab-btn tab-coinfilter" onclick="switchTab('coinfilter')">🪙 小币筛选</button><button class="tab-btn tab-forward" onclick="switchTab('forward')">🧭 前导筛选</button><button class="tab-btn tab-watchlist" onclick="switchTab('watchlist')">🧭 筛币工作台</button></div>
