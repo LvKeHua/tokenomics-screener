@@ -668,6 +668,8 @@ function fwdStartAutoRefresh() {
   }, 300000); // 5 分钟
 }
 var fSort = 'forward_score', fAsc = false, fTag = '', fMinScore = 0;
+// OI 范围自定义（客户端过滤，默认不设限 = 全市场，逻辑不变）
+var fwdOiMin = null, fwdOiMax = null;
 
 // ── 挂接 Tab 切换（与 _coinfilter.js 同模式，链式调用）──
 var __fwdSwitchTab = (typeof switchTab === 'function') ? switchTab : null;
@@ -722,12 +724,34 @@ function fwdFiltered() {
   if (fTag === 'acc') rows = rows.filter(function (r) { return r.signal === 'acc_candidate'; });
   else if (fTag === 'avoid') rows = rows.filter(function (r) { return r.volume_oi_ratio >= 5; });
   else if (fTag === 'watch') rows = rows.filter(function (r) { return r.signal === 'watch'; });
+  // OI 范围过滤（默认不设限 = 全市场）
+  if (fwdOiMin != null) rows = rows.filter(function (r) { return (r.oi_value || 0) >= fwdOiMin; });
+  if (fwdOiMax != null) rows = rows.filter(function (r) { return (r.oi_value || 0) <= fwdOiMax; });
   rows = rows.filter(function (r) { return (r.forward_score || 0) >= fMinScore; });
   rows.sort(function (a, b) {
     var va = a[fSort] || 0, vb = b[fSort] || 0;
     return fAsc ? va - vb : vb - va;
   });
   return rows;
+}
+
+// OI 范围控件（与筛币工作台同款）
+function fwdSetOiRange() {
+  var minEl = document.getElementById('fwd-oi-min');
+  var maxEl = document.getElementById('fwd-oi-max');
+  var minV = minEl ? parseFloat(minEl.value) : NaN;
+  var maxV = maxEl ? parseFloat(maxEl.value) : NaN;
+  fwdOiMin = !isNaN(minV) && minV > 0 ? minV * 1e6 : null;
+  fwdOiMax = !isNaN(maxV) && maxV > 0 ? maxV * 1e6 : null;
+  renderForward();
+}
+function fwdClearOiRange() {
+  fwdOiMin = null; fwdOiMax = null;
+  var minEl = document.getElementById('fwd-oi-min');
+  var maxEl = document.getElementById('fwd-oi-max');
+  if (minEl) minEl.value = '';
+  if (maxEl) maxEl.value = '';
+  renderForward();
 }
 
 function fwdSetPreset(tag) {
@@ -801,6 +825,15 @@ function renderForward() {
   H += '<button class="btn' + (fTag === 'avoid' ? ' btn-active' : '') + '" onclick="fwdSetPreset(\'avoid\')">⛔ 回避名单 (' + avoidN + ')</button>';
   H += '<button class="btn' + (fTag === 'watch' ? ' btn-active' : '') + '" onclick="fwdSetPreset(\'watch\')">👁 观察池 (' + watchN + ')</button>';
   H += '<span class="dim" style="margin-left:auto">更新: ' + (forwardUpdated ? new Date(forwardUpdated).toLocaleString() : '—') + '</span>';
+  H += '</div>';
+  H += '<div class="fwd-bar" style="flex-wrap:wrap;gap:6px;align-items:center">';
+  H += '<span class="dim">OI 范围 (USDT):</span>';
+  H += '<input id="fwd-oi-min" type="number" placeholder="最小 M" style="width:90px;padding:4px 6px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" value="' + (fwdOiMin != null ? (fwdOiMin / 1e6) : '') + '" onkeydown="if(event.key===' + "'Enter'" + ')fwdSetOiRange()">';
+  H += '<span class="dim">—</span>';
+  H += '<input id="fwd-oi-max" type="number" placeholder="最大 M" style="width:90px;padding:4px 6px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px" value="' + (fwdOiMax != null ? (fwdOiMax / 1e6) : '') + '" onkeydown="if(event.key===' + "'Enter'" + ')fwdSetOiRange()">';
+  H += '<button class="btn btn-sm" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;font-weight:700" onclick="fwdSetOiRange()">✓ 确定</button>';
+  H += '<button class="btn btn-sm" onclick="fwdClearOiRange()">清除</button>';
+  H += '<span class="dim" id="fwd-oi-status">' + (fwdOiMin != null || fwdOiMax != null ? '🔍 已过滤 OI ' + (fwdOiMin != null ? (fwdOiMin/1e6) : '0') + 'M ~ ' + (fwdOiMax != null ? (fwdOiMax/1e6) : '∞') + 'M' : '未过滤（全市场）') + '</span>';
   H += '</div>';
   H += '<div class="fwd-stats">🧭候选 ' + accN + ' · ⛔回避 ' + avoidN + ' · 👁已标记 ' + watchN + '</div>';
 
