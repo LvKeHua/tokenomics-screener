@@ -114,6 +114,10 @@ async function fetchBinance() {
             ? Math.round(((high - low) / price) * 100 * 100) / 100
             : 0,
           volume_24h_usdt: vol,
+          // 原始字段名兼容：worker hRL 归档读 priceChangePercent/quoteVolume/lastPrice
+          priceChangePercent: Math.round(chg * 100) / 100,
+          quoteVolume: vol,
+          lastPrice: price,
         });
       }
       if (process.env.DEBUG && attempt > 1) console.log(`Binance: retry #${attempt-1} OK`);
