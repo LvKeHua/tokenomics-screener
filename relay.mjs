@@ -1161,7 +1161,7 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
 // 复用 relayForward 的 klineMap（100 天日线），零额外抓取；回填走 /api/gainer-backfill（仅接受 3 天内日期）
 async function healGainerHistory(syms, klineMap) {
   if (!Array.isArray(syms) || syms.length === 0 || !klineMap || klineMap.size === 0) return;
-  const base = WORKER_URL.replace('/relay-tickers', '');
+  const base = WORKER_URL.replace(/\/api\/relay-tickers$/, '');
   const now = new Date();
   const days = [];
   for (let i = 0; i < 3; i++) {
