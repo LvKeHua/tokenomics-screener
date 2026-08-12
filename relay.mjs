@@ -886,7 +886,7 @@ async function fetchBtcEnv() {
 }
 
 // 100 天日线（60天回撤 + 横盘宽度 + 缩量 + 波动压缩 + 异动检测）
-async function fetchKlineHistory(symbols) {
+async function fetchKlineHistory(symbols, limit = FORWARD_KLINES_LIMIT) {
   const results = new Map();
   let idx = 0;
   const started = Date.now();
@@ -896,7 +896,7 @@ async function fetchKlineHistory(symbols) {
       if (Date.now() - started > 120000) return;
       const sym = symbols[idx++];
       try {
-        const k = await fetchBinanceApi(`/fapi/v1/klines?symbol=${sym}&interval=1d&limit=${FORWARD_KLINES_LIMIT}`);
+        const k = await fetchBinanceApi(`/fapi/v1/klines?symbol=${sym}&interval=1d&limit=${limit}`);
         if (Array.isArray(k) && k.length >= 20) results.set(sym, k);
       } catch (e) { /* skip */ }
     }
@@ -1153,6 +1153,64 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
   } catch (e) {
     console.error('Forward relay failed:', e.message);
   } finally { clearTimeout(timer); }
+  // 🩹 涨幅榜历史自愈：复用已抓取的 klineMap（100 天日线），检查最近 3 天归档缺失并回填
+  await healGainerHistory(syms, klineMap).catch(e => console.error('Heal gainer history failed:', e.message));
+}
+
+// 🩹 涨幅榜历史自愈：检查最近 3 天 gainer_hist 归档，缺失/为空时用日线 klines 回填
+// 复用 relayForward 的 klineMap（100 天日线），零额外抓取；回填走 /api/gainer-backfill（仅接受 3 天内日期）
+async function healGainerHistory(syms, klineMap) {
+  if (!Array.isArray(syms) || syms.length === 0 || !klineMap || klineMap.size === 0) return;
+  const base = WORKER_URL.replace('/relay-tickers', '');
+  const now = new Date();
+  const days = [];
+  for (let i = 0; i < 3; i++) {
+    const bj = new Date(now.getTime() + 8 * 3600 * 1000 - i * 86400000);
+    days.push(bj.toISOString().slice(0, 10));
+  }
+  // 检查哪些天缺失/为空（day-gainers 轻量探测）
+  const missing = [];
+  for (const ds of days) {
+    try {
+      const r = await fetch(`${base}/api/day-gainers?date=${ds}&topn=1`);
+      const d = await r.json();
+      if (!d.ok || !d.total_archived) missing.push(ds);
+    } catch (e) { /* skip */ }
+  }
+  if (missing.length === 0) return;
+  console.log(`Heal: missing gainer archives: ${missing.join(', ')}`);
+  for (const ds of missing) {
+    const prevDs = new Date(Date.parse(ds) - 86400000).toISOString().slice(0, 10);
+    const gainers = [];
+    for (const [sym, k] of klineMap) {
+      const cur = k.find(x => new Date(x[0] + 8 * 3600 * 1000).toISOString().slice(0, 10) === ds);
+      const pv = k.find(x => new Date(x[0] + 8 * 3600 * 1000).toISOString().slice(0, 10) === prevDs);
+      if (!cur || !pv) continue;
+      const c = parseFloat(cur[4]), p = parseFloat(pv[4]);
+      if (p <= 0) continue;
+      gainers.push({
+        symbol: sym,
+        base_asset: sym.replace('USDT', ''),
+        change_24h_pct: Math.round((c / p - 1) * 10000) / 100,
+        volume_24h_usdt: parseFloat(cur[7]),
+        last_price: c,
+      });
+    }
+    if (gainers.length === 0) { console.log(`Heal: no klines for ${ds}, skip`); continue; }
+    try {
+      const resp = await fetch(`${base}/api/gainer-backfill`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Key': AUTH_KEY },
+        body: JSON.stringify({ date: ds, gainers, updated: new Date().toISOString() }),
+      });
+      const result = await resp.json();
+      if (resp.ok && result.ok) console.log(`Heal: backfilled ${ds} (${result.count} gainers)`);
+      else if (result.skipped) console.log(`Heal: ${ds} already has ${result.existing}, skip`);
+      else console.error(`Heal: backfill ${ds} failed:`, JSON.stringify(result));
+    } catch (e) {
+      console.error(`Heal: backfill ${ds} error:`, e.message);
+    }
+  }
 }
 
 main().catch(err => {
