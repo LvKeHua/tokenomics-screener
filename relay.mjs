@@ -770,14 +770,14 @@ function aggregateMarket(binanceRows, bybitRows, okxRows, okxOiMap) {
   return { vol, oi, price };
 }
 
-// 重模块节流：demon/coinfilter 每 30 分钟一次（KV 配额 1000 writes/day 约束）
+// 重模块节流：demon/coinfilter 每 120 分钟一次（KV 配额 1000 writes/day 约束）
 // 用本地文件记录上次运行时间（relay 每次 cron 是独立进程）
 import fs from 'node:fs';
 const HEAVY_MARKER = '/opt/screener/.heavy_last';
 async function isHeavyDue() {
   try {
     const last = parseInt(fs.readFileSync(HEAVY_MARKER, 'utf-8'), 10);
-    if (Date.now() - last < 30 * 60 * 1000) return false;
+    if (Date.now() - last < 120 * 60 * 1000) return false;
   } catch (e) { /* 无标记 → 首次运行 */ }
   try { fs.writeFileSync(HEAVY_MARKER, String(Date.now())); } catch (e) {}
   return true;
