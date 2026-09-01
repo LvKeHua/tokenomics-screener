@@ -205,7 +205,7 @@ async function fetchOkx() {
         amplitude_24h_pct: (high && low && high > 0 && low > 0)
           ? Math.round(((high - low) / price) * 100 * 100) / 100
           : 0,
-        volume_24h_usdt: parseFloat(t.volCcy24h || '0'),
+        volume_24h_usdt: parseFloat(t.volCcy24h || '0') * price, // C6: volCcy24h 是币数, ×price 换算 USDT
       });
     }
     return rows;
@@ -297,6 +297,38 @@ async function fetchOpenInterest(symbols) {
   return results;
 }
 
+
+// C3 修复：推送失败重试（网络错误/5xx 退避 3 次，4xx 不重试，text-first 解析）
+async function postRelay(url, payload, authKey, timeoutMs = 30000) {
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Key': authKey },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      const text = await resp.text();
+      let result = null;
+      try { result = JSON.parse(text); } catch (e) { result = { ok: false, error: text.slice(0, 200) }; }
+      if (resp.ok && result && result.ok) return result;
+      if (resp.status >= 400 && resp.status < 500) {
+        console.error(`Post ${url} rejected (HTTP ${resp.status}):`, text.slice(0, 200));
+        return result;
+      }
+      console.error(`Post ${url} HTTP ${resp.status} (attempt ${attempt}/${MAX_ATTEMPTS}):`, text.slice(0, 200));
+    } catch (e) {
+      console.error(`Post ${url} failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${e.message}`);
+      if (attempt === MAX_ATTEMPTS) return null;
+    } finally { clearTimeout(timer); }
+    if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, attempt * 5000));
+  }
+  return null;
+}
+
 async function relayDemon(binanceRows, agg, sharedOiMap) {
   if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
     console.log('Demon: no binance rows, skip');
@@ -338,24 +370,14 @@ async function relayDemon(binanceRows, agg, sharedOiMap) {
       oi_stage_label: stage.label,
     });
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
-  try {
-    const resp = await fetch(DEMON_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Auth-Key': DEMON_RELAY_KEY },
-      body: JSON.stringify({ data: payload }),
-      signal: controller.signal,
-    });
-    const result = await resp.json();
-    if (resp.ok && result.ok) {
-      console.log(`Demon relay OK: ${result.coins} coins — updated ${result.updated}`);
-    } else {
-      console.error(`Demon relay error (HTTP ${resp.status}):`, JSON.stringify(result));
-    }
-  } catch (e) {
-    console.error('Demon relay failed:', e.message);
-  } finally { clearTimeout(timer); }
+  const result = await postRelay(DEMON_URL, { data: payload }, DEMON_RELAY_KEY);
+  if (result && result.ok) {
+    console.log(`Demon relay OK: ${result.coins} coins — updated ${result.updated}`);
+  } else if (result) {
+    console.error(`Demon relay error (HTTP ${resp.status}):`, JSON.stringify(result));
+  } else {
+    console.error('relay failed after retries: no response');
+  }
 }
 
 // ─── 小币筛选: Binance 资金费率 / 盘口深度 / 上线时间 ──────────
@@ -716,24 +738,14 @@ async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listing
   }
   if (payload.length === 0) { console.log('Coinfilter: no payload, skip'); return; }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
-  try {
-    const resp = await fetch(COINFILTER_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Auth-Key': COINFILTER_RELAY_KEY },
-      body: JSON.stringify({ data: payload, mentioned: MENTIONED }),
-      signal: controller.signal,
-    });
-    const result = await resp.json();
-    if (resp.ok && result.ok) {
-      console.log(`Coinfilter relay OK: ${result.coins} coins — updated ${result.updated}`);
-    } else {
-      console.error(`Coinfilter relay error (HTTP ${resp.status}):`, JSON.stringify(result));
-    }
-  } catch (e) {
-    console.error('Coinfilter relay failed:', e.message);
-  } finally { clearTimeout(timer); }
+  const result = await postRelay(COINFILTER_URL, { data: payload, mentioned: MENTIONED }, COINFILTER_RELAY_KEY);
+  if (result && result.ok) {
+    console.log(`Coinfilter relay OK: ${result.coins} coins — updated ${result.updated}`);
+  } else if (result) {
+    console.error(`Coinfilter relay error (HTTP ${resp.status}):`, JSON.stringify(result));
+  } else {
+    console.error('relay failed after retries: no response');
+  }
 }
 
 // ── 全市场聚合：交易量 = Binance+Bybit+OKX 三所之和；OI = 三所 OI 之和 ──
@@ -830,29 +842,13 @@ async function main() {
 
     console.log(`Relaying ${total} tickers from ${sourceCount} source(s): ${Object.keys(payload).join(', ')}`);
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
-    try {
-      const resp = await fetch(WORKER_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Auth-Key': AUTH_KEY,
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-
-      const result = await resp.json();
-      if (resp.ok && result.ok) {
-        console.log(`Relay OK: ${result.sources} — updated ${result.updated}`);
-      } else {
-        console.error(`Relay error (HTTP ${resp.status}):`, JSON.stringify(result));
-        // KV 限额等写入失败不阻断 demon/coinfilter 管道
-      }
-    } catch (e) {
-      console.error('Tickers relay failed:', e.message);
-    } finally { clearTimeout(timer); }
+    const result = await postRelay(WORKER_URL, payload, AUTH_KEY);
+    if (result && result.ok) {
+      console.log(`Relay OK: ${result.sources} — updated ${result.updated}`);
+    } else {
+      // 4xx 拒绝 / 重试耗尽（KV 限额等写入失败）不阻断 demon/coinfilter 管道
+      console.error('Tickers relay failed after retries:', result ? JSON.stringify(result) : 'no response');
+    }
 
     // 重计算模块节流：demon/coinfilter 每 30 分钟（KV 配额 1000 writes/day 约束），
     // forward 每 15 分钟（候选池归档核心）；tickers 每轮 5 分钟
@@ -1169,24 +1165,14 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
   }
   if (payload.length === 0) { console.log('Forward: no payload, skip'); return; }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
-  try {
-    const resp = await fetch(FORWARD_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Auth-Key': FORWARD_RELAY_KEY },
-      body: JSON.stringify({ data: payload, env: btcEnv }),
-      signal: controller.signal,
-    });
-    const result = await resp.json();
-    if (resp.ok && result.ok) {
-      console.log(`Forward relay OK: ${result.coins} coins — updated ${result.updated}`);
-    } else {
-      console.error(`Forward relay error (HTTP ${resp.status}):`, JSON.stringify(result));
-    }
-  } catch (e) {
-    console.error('Forward relay failed:', e.message);
-  } finally { clearTimeout(timer); }
+  const result = await postRelay(FORWARD_URL, { data: payload, env: btcEnv }, FORWARD_RELAY_KEY);
+  if (result && result.ok) {
+    console.log(`Forward relay OK: ${result.coins} coins — updated ${result.updated}`);
+  } else if (result) {
+    console.error(`Forward relay error (HTTP ${resp.status}):`, JSON.stringify(result));
+  } else {
+    console.error('relay failed after retries: no response');
+  }
   // 🩹 涨幅榜历史自愈：复用已抓取的 klineMap（100 天日线），检查最近 3 天归档缺失并回填
   await healGainerHistory(syms, klineMap).catch(e => console.error('Heal gainer history failed:', e.message));
 }
