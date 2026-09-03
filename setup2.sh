@@ -6,10 +6,15 @@
 # ═══════════════════════════════════════════════════════════
 set -e
 
-# 密钥（与本地 relay-runner.js 完全一致，已核对）
-RELAY_AUTH_KEY="55e313c395c3c93a212754423b53ffff0396cfa98f32c4c9fe5b45000f803a99"
-DEMON_RELAY_KEY="0eb3f463c85e160bbedbec6b3131bb862bdd0c82ccf9f390"
-COINALYZE_API_KEY="aa861aac-7194-430b-a4da-aab3ea98cb74"
+# 密钥从环境变量读取（勿硬编码入库）
+# 用法: RELAY_AUTH_KEY=xxx DEMON_RELAY_KEY=xxx COINALYZE_API_KEY=xxx bash setup2.sh
+RELAY_AUTH_KEY="${RELAY_AUTH_KEY:-}"
+DEMON_RELAY_KEY="${DEMON_RELAY_KEY:-}"
+COINALYZE_API_KEY="${COINALYZE_API_KEY:-}"
+if [ -z "$RELAY_AUTH_KEY" ] || [ -z "$DEMON_RELAY_KEY" ]; then
+  echo "❌ 缺少密钥环境变量。请先设置 RELAY_AUTH_KEY / DEMON_RELAY_KEY 再运行。"
+  exit 1
+fi
 
 echo "=== 密钥校验 ==="
 echo "RELAY_AUTH_KEY    长度=${#RELAY_AUTH_KEY} (期望64)"
@@ -62,6 +67,13 @@ EOF
 chmod +x /opt/screener/run.sh
 
 echo ""
+echo "=== 4.5/5 写入本地兜底开关（默认关闭） ==="
+cat > /opt/screener/.fallback_disabled <<'EOF'
+# 本文件表示 relay 已切换为 VPS 唯一来源，本地兜底已停用。
+# 如需回退，删除本文件并在本机启动 relay-loop.js（已从仓库移除）。
+EOF
+
+echo ""
 echo "=== 4/5 安装 cron + 定时任务 ==="
 if ! command -v crontab >/dev/null 2>&1; then
   echo "install cron..."
@@ -80,3 +92,10 @@ tail -15 /opt/screener/relay.log
 
 echo ""
 echo "DONE. cron: every 15min. log: /opt/screener/relay.log"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  本地兜底已停用"
+echo "  - relay-loop.js / relay-runner.bat 已从仓库删除"
+echo "  - 请勿在本机再跑 relay 定时任务，避免双写 KV"
+echo "  - 如需本地调试：node relay.mjs（一次性）"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

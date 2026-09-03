@@ -1,8 +1,9 @@
 name: Exchange Ticker Relay
 
 on:
-  # 定时调度已停用：GitHub Actions 美国 IP 被 Binance 永久封锁（HTTP 451，2026-08-11 确认连续 50 次失败）
-  # 数据抓取现由日本 VPS (Evoxt 东京) cron 承担，本 workflow 仅保留手动触发用于应急
+  # 定时调度已停用：抓取已完全迁移到日本 VPS (Evoxt 东京) cron。
+  # GitHub Actions 美国 IP 被 Binance 永久封锁（HTTP 451，2026-08-11 确认连续 50 次失败），
+  # 且本地兜底已停用，因此本 workflow 仅保留手动触发用于极端应急。
   workflow_dispatch:
 
 permissions:
