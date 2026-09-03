@@ -755,6 +755,8 @@ function aggregateMarket(binanceRows, bybitRows, okxRows, okxOiMap) {
   const vol = new Map();   // symbol -> 三所 24h 交易量之和
   const oi = new Map();    // symbol -> 三所 OI 现值之和(USD)
   const price = new Map(); // symbol -> Binance 价格(基准)
+  // 容错：Binance 抓失败时 binanceRows 可能不是数组，避免 "not iterable" 崩溃
+  if (!Array.isArray(binanceRows)) return { vol, oi, price };
   for (const r of binanceRows) {
     vol.set(r.symbol, r.volume_24h_usdt || 0);
     price.set(r.symbol, r.price);
@@ -859,7 +861,10 @@ async function main() {
         const okxOiMap = await fetchOkxOi().catch(() => new Map());
         const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
         // Binance OI 只抓一次，三个模块复用（避免 3×679 请求触发限流卡死）
-        const oiMap = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
+        let oiMap = new Map();
+        if (payload.binance && payload.binance.length > 0) {
+          oiMap = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
+        }
         console.log(`Main: fetched OI=${oiMap.size} (shared across demon/coinfilter/forward)`);
 
         // 妖币扫描数据（基于本次 Binance ticker + 全市场聚合）
@@ -877,7 +882,7 @@ async function main() {
 
       // 前导筛选数据（基于本次 Binance ticker）— 每 15 分钟
       if (payload.binance) {
-        await relayForward(payload.binance, process.env.DEBUG, null, null).catch(e => console.error('Forward relay failed:', e.message));
+        await relayForward(payload.binance, process.env.DEBUG, agg, oiMap).catch(e => console.error('Forward relay failed:', e.message));
       }
     }
   }
