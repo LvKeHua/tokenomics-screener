@@ -154,6 +154,7 @@ async function fetchBinance() {
           lastPrice: price,
         });
       }
+      saveArrayCache('binance.json', rows);
       if (process.env.DEBUG && attempt > 1) console.log(`Binance: retry #${attempt-1} OK`);
       return rows;
     } catch (e) {
@@ -336,11 +337,11 @@ async function fetchOpenInterest(symbols) {
 async function relayDemon(binanceRows, agg, sharedOiMap) {
   if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
     console.log('Demon: no binance rows, skip');
-    return;
+    return false;
   }
   const sorted = binanceRows.slice().sort((a, b) => (b.volume_24h_usdt || 0) - (a.volume_24h_usdt || 0));
   const candidates = sorted.filter(r => (r.volume_24h_usdt || 0) >= DEMON_MIN_VOL);
-  if (candidates.length === 0) { console.log('Demon: no candidates, skip'); return; }
+  if (candidates.length === 0) { console.log('Demon: no candidates, skip'); return false; }
   let oiMap = sharedOiMap;
   if (!oiMap || oiMap.size === 0) {
     console.log(`Demon: fetching OI for ${candidates.length} symbols...`);
@@ -376,15 +377,16 @@ async function relayDemon(binanceRows, agg, sharedOiMap) {
   }
   if (!DEMON_RELAY_KEY) {
     console.error('FATAL: DEMON_RELAY_KEY not set.');
-    return;
-  }
-  const result = await postRelay(DEMON_URL, { data: payload }, DEMON_RELAY_KEY);
-  if (result && result.ok) {
-    console.log(`Demon relay OK: ${result.coins} coins — updated ${result.updated}`);
-  } else if (result) {
-    console.error('Demon relay rejected:', JSON.stringify(result));
+    return false;
   } else {
-    console.error('Demon relay failed after retries: no response');
+    const result = await postRelay(DEMON_URL, { data: payload }, DEMON_RELAY_KEY);
+    if (result && result.ok) {
+      console.log(`Demon relay OK: ${result.coins} coins — updated ${result.updated}`);
+      return true;
+    } else {
+      console.error('Demon relay failed:', result ? JSON.stringify(result) : 'no response');
+      return false;
+    }
   }
 }
 
@@ -843,6 +845,26 @@ function loadMapCache(name, maxAgeMs) {
   } catch (e) { /* cache miss */ }
   return result;
 }
+
+function loadArrayCache(name, maxAgeMs) {
+  try {
+    const file = path.join(RELAY_CACHE_DIR, name);
+    const rows = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    return Date.now() - fs.statSync(file).mtimeMs <= maxAgeMs && Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveArrayCache(name, values) {
+  try {
+    fs.mkdirSync(RELAY_CACHE_DIR, { recursive: true });
+    const file = path.join(RELAY_CACHE_DIR, name);
+    const temp = file + '.tmp';
+    fs.writeFileSync(temp, JSON.stringify(values));
+    fs.renameSync(temp, file);
+  } catch (e) { console.error(`Cache ${name} write failed:`, e.message); }
+}
 function isMapCacheFresh(name, maxAgeMs) {
   try {
     const file = path.join(RELAY_CACHE_DIR, name);
@@ -933,6 +955,13 @@ async function main() {
         if (process.env.DEBUG) console.log(`${name}: FAILED ${r.reason?.message || 'no data'}`);
       }
     }
+    if (!payload.binance) {
+      const cachedBinance = loadArrayCache('binance.json', 45 * 60 * 1000);
+      if (cachedBinance.length > 0) {
+        payload.binance = cachedBinance;
+        console.log(`Binance: using ${cachedBinance.length} cached tickers for core refresh`);
+      }
+    }
 
     const sourceCount = Object.keys(payload).length;
     if (sourceCount === 0) {
@@ -977,12 +1006,15 @@ async function main() {
       if (payload.binance && oiMap.size > 0) {
         if (heavyDue) {
           console.log(`Main: heavy refresh with OI=${oiMap.size}`);
-          await relayDemon(payload.binance, agg, oiMap).catch(e => console.error('Demon relay failed:', e.message));
+          const demonOk = await relayDemon(payload.binance, agg, oiMap).catch(e => {
+            console.error('Demon relay failed:', e.message);
+            return false;
+          });
           coinfilterOk = await relayCoinfilter(payload.binance, oiMap, null, null, null, agg, true).catch(e => {
             console.error('Coinfilter heavy refresh failed:', e.message);
             return false;
           });
-          if (coinfilterOk) {
+          if (demonOk && coinfilterOk) {
             markHeavySuccess();
           } else {
             console.error('Heavy modules incomplete; marker not advanced, next cron will retry');
