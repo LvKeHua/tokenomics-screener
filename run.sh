@@ -10,7 +10,7 @@ import json
 import urllib.request
 
 try:
-    with urllib.request.urlopen("https://app.slinglab.xyz/screener/api/screener?watchdog=1", timeout=20) as response:
+    with urllib.request.urlopen("https://app.slinglab.xyz/screener/api/status?watchdog=1", timeout=20) as response:
         payload = json.load(response)
     print("healthy" if payload.get("stale") is False else "stale")
 except Exception:
@@ -34,7 +34,7 @@ else
       echo "===== [$(date -u +%H:%M:%S)] relay attempt $attempt =====" >> relay.log
       out=$(RELAY_ROUNDS=1 RELAY_ROUND_INTERVAL_MS=0 timeout 12m node relay.mjs 2>&1)
       echo "$out" >> relay.log
-      if echo "$out" | grep -q "Coinfilter relay OK" && echo "$out" | grep -q "Forward relay OK"; then
+      if echo "$out" | grep -q "Coinfilter relay OK" && echo "$out" | grep -q "Forward relay OK" && ! echo "$out" | grep -q "Heavy modules incomplete"; then
         echo "===== [$(date -u +%H:%M:%S)] SUCCESS on attempt $attempt =====" >> relay.log
         success=1
         break
