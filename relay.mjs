@@ -657,121 +657,138 @@ function computeCoinfilterTags(r, oiValue, volumeOiRatio, fundingRatePct, depthU
   return tags;
 }
 
-async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listingMap, agg) {
+async function fetchWorkerCoinfilterRows() {
+  try {
+    const url = COINFILTER_URL.replace('/relay-coinfilter', '/coinfilter');
+    const body = await fetchWithTimeout(url);
+    const rows = new Map();
+    for (const row of body.data || []) if (row.symbol) rows.set(row.symbol, row);
+    return rows;
+  } catch (e) {
+    console.error('Previous coinfilter snapshot unavailable:', e.message);
+    return new Map();
+  }
+}
+
+function mapPreviousField(rows, field) {
+  const result = new Map();
+  for (const [symbol, row] of rows) if (row[field] != null) result.set(symbol, row[field]);
+  return result;
+}
+
+function mapPreviousListing(rows) {
+  const result = new Map();
+  for (const [symbol, row] of rows) {
+    if (row.listing_date || row.days_since_listing != null) result.set(symbol, { listing_date: row.listing_date || null, days_since_listing: row.days_since_listing });
+  }
+  return result;
+}
+
+function buildCoinfilterRow(r, oiMap, fundingMap, depthMap, listingMap, agg, previousRows, lsrMap, liqMap, oiTrendMap) {
+  const oi = oiMap.get(r.symbol);
+  if (oi == null) return null;
+  const previous = previousRows.get(r.symbol) || {};
+  const aggOi = agg && agg.oi ? (agg.oi.get(r.symbol) || 0) : 0;
+  const aggVol = agg && agg.vol ? (agg.vol.get(r.symbol) || 0) : 0;
+  const oiValue = oi * r.price + aggOi;
+  const volUsdt = aggVol > 0 ? aggVol : r.volume_24h_usdt;
+  const ratio = oiValue > 0 ? volUsdt / oiValue : 0;
+  const funding = fundingMap.get(r.symbol);
+  const depth = depthMap.get(r.symbol);
+  const listing = listingMap.get(r.symbol);
+  const stage = computeOiStage(oiValue);
+  const lsr = lsrMap.get(r.symbol);
+  const liq = liqMap.get(r.symbol);
+  const oiTrend = oiTrendMap.get(r.symbol);
+  return {
+    symbol: r.symbol, base_asset: r.base_asset, price: r.price,
+    change_24h_pct: r.change_24h_pct, amplitude_24h_pct: r.amplitude_24h_pct,
+    volume_24h_usdt: Math.round(volUsdt * 100) / 100,
+    oi_value: Math.round(oiValue * 100) / 100, oi_contracts: oi,
+    volume_oi_ratio: Math.round(ratio * 10000) / 10000,
+    funding_rate_pct: funding != null ? Math.round(funding * 10000) / 10000 : null,
+    orderbook_depth_usdt: depth != null ? depth : null,
+    listing_date: listing ? listing.listing_date : null,
+    days_since_listing: listing ? listing.days_since_listing : null,
+    oi_stage: stage.stage, oi_stage_label: stage.label,
+    tags: computeCoinfilterTags(r, oiValue, ratio, funding, depth, listing),
+    long_short_ratio: lsr ? lsr.ratio : previous.long_short_ratio ?? null,
+    long_pct: lsr ? lsr.long_pct : previous.long_pct ?? null,
+    short_pct: lsr ? lsr.short_pct : previous.short_pct ?? null,
+    liq_24h_usdt: liq ? liq.total_liq_usdt : previous.liq_24h_usdt ?? null,
+    liq_long_24h_usdt: liq ? liq.long_liq_usdt : previous.liq_long_24h_usdt ?? null,
+    liq_short_24h_usdt: liq ? liq.short_liq_usdt : previous.liq_short_24h_usdt ?? null,
+    oi_24h_change_pct: oiTrend ? oiTrend.oi_24h_change_pct : previous.oi_24h_change_pct ?? null,
+    predicted_funding_rate_pct: previous.predicted_funding_rate_pct ?? null,
+  };
+}
+
+async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listingMap, agg, refreshEnrichment = true) {
   if (!Array.isArray(binanceRows) || binanceRows.length === 0) {
     console.log('Coinfilter: no binance rows, skip');
-    return;
-  }
-  const sorted = binanceRows.slice().sort((a, b) => (b.volume_24h_usdt || 0) - (a.volume_24h_usdt || 0));
-  const candidates = sorted.filter(r => (r.volume_24h_usdt || 0) >= DEMON_MIN_VOL);
-  if (candidates.length === 0) { console.log('Coinfilter: no candidates, skip'); return; }
-
-  const syms = candidates.map(r => r.symbol);
-  oiMap = oiMap || await fetchOpenInterest(syms);
-  const cachedFunding = loadMapCache('funding.json', 3 * 60 * 60 * 1000);
-  if (fundingMap) {
-    fundingMap = mergeMaps(cachedFunding, fundingMap);
+    return false;
   } else {
-    const liveFunding = await fetchFundingRates(syms);
-    fundingMap = mergeMaps(cachedFunding, liveFunding);
+    const sorted = binanceRows.slice().sort((a, b) => (b.volume_24h_usdt || 0) - (a.volume_24h_usdt || 0));
+    const candidates = sorted.filter(r => (r.volume_24h_usdt || 0) >= DEMON_MIN_VOL);
+    if (candidates.length === 0) {
+      console.log('Coinfilter: no candidates, skip');
+      return false;
+    } else {
+      const syms = candidates.map(r => r.symbol);
+      const previousRows = await fetchWorkerCoinfilterRows();
+      const previousFunding = mapPreviousField(previousRows, 'funding_rate_pct');
+      const previousDepth = mapPreviousField(previousRows, 'orderbook_depth_usdt');
+      const previousListing = mapPreviousListing(previousRows);
+      oiMap = oiMap || await fetchOpenInterest(syms);
+      fundingMap = mergeMaps(previousFunding, loadMapCache('funding.json', Number.MAX_SAFE_INTEGER));
+      depthMap = mergeMaps(previousDepth, loadMapCache('depth.json', Number.MAX_SAFE_INTEGER));
+      if (refreshEnrichment) {
+        fundingMap = mergeMaps(fundingMap, await fetchFundingRates(syms));
+        depthMap = mergeMaps(depthMap, await fetchOrderbookDepths(syms));
+      }
+      if (fundingMap.size > 0) saveMapCache('funding.json', fundingMap);
+      if (depthMap.size > 0) saveMapCache('depth.json', depthMap);
+      listingMap = mergeMaps(previousListing, listingMap || await fetchListingDates());
+      console.log(`Coinfilter: mode=${refreshEnrichment?'heavy':'light'} OI=${oiMap.size} funding=${fundingMap.size} depth=${depthMap.size} listing=${listingMap.size}`);
+      return relayCoinfilterPayload(sorted, oiMap, fundingMap, depthMap, listingMap, agg, previousRows, refreshEnrichment);
+    }
   }
-  if (fundingMap.size > 0) saveMapCache('funding.json', fundingMap);
-  const cachedDepth = loadMapCache('depth.json', 3 * 60 * 60 * 1000);
-  if (depthMap) {
-    depthMap = mergeMaps(cachedDepth, depthMap);
-  } else {
-    const liveDepth = await fetchOrderbookDepths(syms);
-    depthMap = mergeMaps(cachedDepth, liveDepth);
-  }
-  if (depthMap.size > 0) saveMapCache('depth.json', depthMap);
-  listingMap = listingMap || await fetchListingDates();
-  console.log(`Coinfilter: got OI=${oiMap.size} funding=${fundingMap.size} depth=${depthMap.size} listing=${listingMap.size}`);
+}
 
+async function relayCoinfilterPayload(sorted, oiMap, fundingMap, depthMap, listingMap, agg, previousRows, refreshEnrichment) {
   const payload = [];
-  // Coinalyze 补充数据：只对候选币查询（小币区间+有换手+他提过的），串行调用避免 40次/分钟 限流
-  let lsrMap = new Map(), liqMap = new Map(), oiTrendMap = new Map(), pfrMap = new Map();
-  if (COINALYZE_ENABLED) {
-    // 候选条件：OI 2M-80M（排除大币/僵尸）且 vol/OI≥3x（有换手），或他提过的币（无论状态都关注）
-    // 薄盘口不列为候选条件（小币普遍薄，93%都是<200K），只作为标签显示
-    const cyCandidates = sorted.filter(r => {
+  let lsrMap = new Map(), liqMap = new Map(), oiTrendMap = new Map();
+  if (COINALYZE_ENABLED && refreshEnrichment) {
+    const cySyms = sorted.filter(r => {
       const oi = oiMap.get(r.symbol);
       if (oi == null) return false;
       const oiValue = oi * r.price;
-      const ratio = oiValue > 0 ? r.volume_24h_usdt / oiValue : 0;
-      const inRange = oiValue >= 2000000 && oiValue <= 80000000;
-      const hasTurnover = ratio >= 3;
-      const mentioned = MENTIONED.includes(r.base_asset);
-      return (inRange && hasTurnover) || mentioned;
-    }).map(r => r.symbol);
-    // 上限 20 个：20×3端点(LSR/Liq/OI-trend) = 60 symbol-calls，滚动窗口 38/min 约1.6分钟，适配5分钟周期
-    // 预测资费(PFR)价值低，不查，省限流预算
-    const cySyms = cyCandidates.slice(0, 20);
+      return (oiValue >= 2000000 && oiValue <= 80000000 && r.volume_24h_usdt / oiValue >= 3) || MENTIONED.includes(r.base_asset);
+    }).map(r => r.symbol).slice(0, 20);
     if (cySyms.length > 0) {
       console.log(`Coinalyze: fetching for ${cySyms.length} candidates (LSR/liq/OI-trend)...`);
-      // 串行执行，滚动窗口按 symbol 数限流（40 symbols/min）
       lsrMap = await fetchCoinalyzeLongShort(cySyms);
       liqMap = await fetchCoinalyzeLiquidations(cySyms);
       oiTrendMap = await fetchCoinalyzeOiTrend(cySyms);
-      console.log(`Coinalyze: got LSR=${lsrMap.size} Liq=${liqMap.size} OI-trend=${oiTrendMap.size}`);
     }
   }
-  for (const r of sorted) {
-    const oi = oiMap.get(r.symbol);
-    if (oi == null) continue;
-    // 全市场聚合：OI = Binance + Bybit + OKX；交易量 = 三所之和
-    const aggOi = agg && agg.oi ? (agg.oi.get(r.symbol) || 0) : 0;
-    const aggVol = agg && agg.vol ? (agg.vol.get(r.symbol) || 0) : 0;
-    const oiValue = oi * r.price + aggOi;
-    const volUsdt = aggVol > 0 ? aggVol : r.volume_24h_usdt;
-    const volumeOiRatio = oiValue > 0 ? volUsdt / oiValue : 0;
-    const fundingRatePct = fundingMap.get(r.symbol);
-    const depthUsdt = depthMap.get(r.symbol);
-    const listing = listingMap.get(r.symbol);
-    const stage = computeOiStage(oiValue);
-    const tags = computeCoinfilterTags(r, oiValue, volumeOiRatio, fundingRatePct, depthUsdt, listing);
-    payload.push({
-      symbol: r.symbol,
-      base_asset: r.base_asset,
-      price: r.price,
-      change_24h_pct: r.change_24h_pct,
-      amplitude_24h_pct: r.amplitude_24h_pct,
-      volume_24h_usdt: Math.round(volUsdt * 100) / 100,
-      oi_value: Math.round(oiValue * 100) / 100,
-      oi_contracts: oi,
-      volume_oi_ratio: Math.round(volumeOiRatio * 10000) / 10000,
-      funding_rate_pct: fundingRatePct != null ? Math.round(fundingRatePct * 10000) / 10000 : null,
-      orderbook_depth_usdt: depthUsdt != null ? depthUsdt : null,
-      listing_date: listing ? listing.listing_date : null,
-      days_since_listing: listing ? listing.days_since_listing : null,
-      oi_stage: stage.stage,
-      oi_stage_label: stage.label,
-      tags,
-      // Coinalyze 补充字段（无数据则为 null）
-      long_short_ratio: lsrMap.get(r.symbol) ? lsrMap.get(r.symbol).ratio : null,
-      long_pct: lsrMap.get(r.symbol) ? lsrMap.get(r.symbol).long_pct : null,
-      short_pct: lsrMap.get(r.symbol) ? lsrMap.get(r.symbol).short_pct : null,
-      liq_24h_usdt: liqMap.get(r.symbol) ? liqMap.get(r.symbol).total_liq_usdt : null,
-      liq_long_24h_usdt: liqMap.get(r.symbol) ? liqMap.get(r.symbol).long_liq_usdt : null,
-      liq_short_24h_usdt: liqMap.get(r.symbol) ? liqMap.get(r.symbol).short_liq_usdt : null,
-      oi_24h_change_pct: oiTrendMap.get(r.symbol) ? oiTrendMap.get(r.symbol).oi_24h_change_pct : null,
-      predicted_funding_rate_pct: pfrMap.get(r.symbol) != null ? pfrMap.get(r.symbol) : null,
-    });
-  }
-  if (payload.length === 0) { console.log('Coinfilter: no payload, skip'); return; }
-  if (!COINFILTER_RELAY_KEY) {
-    console.error('FATAL: DEMON_RELAY_KEY not set (coinfilter).');
-    return;
-  }
-
-  const result = await postRelay(COINFILTER_URL, { data: payload, mentioned: MENTIONED }, COINFILTER_RELAY_KEY);
-  if (result && result.ok) {
-    console.log(`Coinfilter relay OK: ${result.coins} coins — updated ${result.updated}`);
-  } else if (result) {
-    console.error('Coinfilter relay rejected:', JSON.stringify(result));
+  for (const row of sorted) payload.push(buildCoinfilterRow(row, oiMap, fundingMap, depthMap, listingMap, agg, previousRows, lsrMap, liqMap, oiTrendMap));
+  const usable = payload.filter(Boolean);
+  if (usable.length === 0 || !COINFILTER_RELAY_KEY) {
+    console.error(usable.length === 0 ? 'Coinfilter: no payload, skip' : 'FATAL: DEMON_RELAY_KEY not set (coinfilter).');
+    return false;
   } else {
-    console.error('Coinfilter relay failed after retries: no response');
+    const result = await postRelay(COINFILTER_URL, { data: usable, mentioned: MENTIONED }, COINFILTER_RELAY_KEY);
+    if (result && result.ok) {
+      console.log(`Coinfilter relay OK: ${result.coins} coins — updated ${result.updated}`);
+      return true;
+    } else {
+      console.error('Coinfilter relay failed:', result ? JSON.stringify(result) : 'no response');
+      return false;
+    }
   }
 }
+
 
 // ── 全市场聚合：交易量 = Binance+Bybit+OKX 三所之和；OI = 三所 OI 之和 ──
 // 输入: binanceRows(含 OI 现值) + bybitRows(含 open_interest_value) + okxRows + okxOiMap
@@ -863,16 +880,25 @@ async function fetchWorkerOiCache() {
   return result;
 }
 
-async function isHeavyDue() {
-  let due = true;
+function normalizeHeavyTimestamp(value) {
+  let timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+  while (timestamp > Date.now() * 10) timestamp = Math.floor(timestamp / 1000);
+  return timestamp;
+}
+
+function isHeavyDue() {
   try {
-    const last = parseInt(fs.readFileSync(HEAVY_MARKER, 'utf-8'), 10);
-    if (Date.now() - last < 120 * 60 * 1000) due = false;
-  } catch (e) { /* 无标记 → 首次运行 */ }
-  if (due) {
-    try { fs.writeFileSync(HEAVY_MARKER, String(Date.now())); } catch (e) {}
+    const last = normalizeHeavyTimestamp(fs.readFileSync(HEAVY_MARKER, 'utf-8'));
+    return last == null || Date.now() - last >= 120 * 60 * 1000;
+  } catch (e) {
+    return true;
   }
-  return due;
+}
+
+function markHeavySuccess() {
+  try { fs.writeFileSync(HEAVY_MARKER, String(Date.now())); }
+  catch (e) { console.error('Heavy marker write failed:', e.message); }
 }
 
 async function main() {
@@ -929,41 +955,55 @@ async function main() {
       console.error('Tickers relay failed after retries:', result ? JSON.stringify(result) : 'no response');
     }
 
-    // 重计算模块节流：demon/coinfilter 每 120 分钟（KV 配额 1000 writes/day 约束），
-    // forward 每 15 分钟刷新行情，但复用磁盘 OI/K 线缓存，避免逐币请求触发 Binance 封禁。
+    // coinfilter 轻量行情每 15 分钟更新；OI/深度/Coinalyze 重补充每 120 分钟更新。
     let oiMap = loadMapCache('oi.json', 3 * 60 * 60 * 1000);
     if (round === 0) {
       const okxOiMap = await fetchOkxOi().catch(() => new Map());
       const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
-      const heavyDue = await isHeavyDue();
-      if (heavyDue) {
-        if (oiMap.size === 0 && payload.binance && payload.binance.length > 0) {
-          const liveOi = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
-          if (liveOi.size > 0) {
-            oiMap = liveOi;
-            saveMapCache('oi.json', oiMap);
-          }
+      const heavyDue = isHeavyDue();
+      if (heavyDue && oiMap.size === 0 && payload.binance && payload.binance.length > 0) {
+        const liveOi = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
+        if (liveOi.size > 0) {
+          oiMap = liveOi;
+          saveMapCache('oi.json', oiMap);
         }
-        if (oiMap.size === 0) {
-          oiMap = await fetchWorkerOiCache();
-          if (oiMap.size > 0) saveMapCache('oi.json', oiMap);
-        }
-        console.log(`Main: available OI=${oiMap.size} (shared across demon/coinfilter/forward)`);
-        if (payload.binance && oiMap.size > 0) {
-          await relayDemon(payload.binance, agg, oiMap).catch(e => console.error('Demon relay failed:', e.message));
-          await relayCoinfilter(payload.binance, oiMap, null, null, null, agg).catch(e => console.error('Coinfilter relay failed:', e.message));
-        }
-      } else {
-        console.log('Heavy modules (demon/coinfilter) throttled: last run < 120min ago');
+      }
+      if (oiMap.size === 0) {
+        oiMap = await fetchWorkerOiCache();
+        if (oiMap.size > 0) saveMapCache('oi.json', oiMap);
       }
 
-      if (payload.binance) {
-        if (oiMap.size === 0) {
-          oiMap = await fetchWorkerOiCache();
-          if (oiMap.size > 0) saveMapCache('oi.json', oiMap);
+      let coinfilterOk = false;
+      if (payload.binance && oiMap.size > 0) {
+        if (heavyDue) {
+          console.log(`Main: heavy refresh with OI=${oiMap.size}`);
+          await relayDemon(payload.binance, agg, oiMap).catch(e => console.error('Demon relay failed:', e.message));
+          coinfilterOk = await relayCoinfilter(payload.binance, oiMap, null, null, null, agg, true).catch(e => {
+            console.error('Coinfilter heavy refresh failed:', e.message);
+            return false;
+          });
+          if (coinfilterOk) {
+            markHeavySuccess();
+          } else {
+            console.error('Heavy modules incomplete; marker not advanced, next cron will retry');
+            coinfilterOk = await relayCoinfilter(payload.binance, oiMap, null, null, null, agg, false).catch(e => {
+              console.error('Coinfilter light fallback failed:', e.message);
+              return false;
+            });
+          }
+        } else {
+          console.log('Heavy enrichment throttled: last success < 120min; running light coinfilter');
+          coinfilterOk = await relayCoinfilter(payload.binance, oiMap, null, null, null, agg, false).catch(e => {
+            console.error('Coinfilter light refresh failed:', e.message);
+            return false;
+          });
         }
-        await relayForward(payload.binance, process.env.DEBUG, agg, oiMap).catch(e => console.error('Forward relay failed:', e.message));
+      } else {
+        console.error('Coinfilter: Binance rows or OI unavailable');
       }
+
+      if (!coinfilterOk) console.error('Coinfilter update incomplete');
+      if (payload.binance) await relayForward(payload.binance, process.env.DEBUG, agg, oiMap).catch(e => console.error('Forward relay failed:', e.message));
     }
   }
 }
