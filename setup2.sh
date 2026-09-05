@@ -58,11 +58,26 @@ chmod 600 /opt/screener/relay.env
 cat > /opt/screener/run.sh <<'EOF'
 #!/bin/bash
 # 每次运行前尝试同步最新 relay.mjs，但带超时+容错：git pull 失败/卡住绝不影响 relay 主流程
-# （cron 非交互环境下 git pull 可能卡住，这里限制 20 秒并忽略失败）
 cd /tmp/s 2>/dev/null && timeout 20 git pull --quiet 2>/dev/null && cp -f relay.mjs /opt/screener/relay.mjs 2>/dev/null
 cd /opt/screener
 set -a; source relay.env; set +a
-node relay.mjs >> relay.log 2>&1
+exec 9>/opt/screener/.relay.lock
+if flock -n 9; then
+  for attempt in 1 2; do
+    echo "===== [$(date -u +%H:%M:%S)] relay attempt $attempt =====" >> relay.log
+    out=$(node relay.mjs 2>&1)
+    echo "$out" >> relay.log
+    if echo "$out" | grep -q "Forward relay OK"; then
+      echo "===== [$(date -u +%H:%M:%S)] SUCCESS on attempt $attempt =====" >> relay.log
+      break
+    else
+      echo "===== [$(date -u +%H:%M:%S)] forward not OK, retry in 60s =====" >> relay.log
+      sleep 60
+    fi
+  done
+else
+  echo "===== [$(date -u +%H:%M:%S)] SKIP overlapping relay =====" >> relay.log
+fi
 EOF
 chmod +x /opt/screener/run.sh
 
