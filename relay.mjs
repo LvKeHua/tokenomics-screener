@@ -865,15 +865,17 @@ async function main() {
     }
 
     // 重计算模块节流：demon/coinfilter 每 30 分钟（KV 配额 1000 writes/day 约束），
-    // forward 每 15 分钟（候选池归档核心）；tickers 每轮 5 分钟
+    // forward 每 15 分钟（候选池归档核心）；tickers 每轮 5 分钟。
+    // forward 不得依赖 heavyDue 分支里的块级变量，否则节流轮次会在参数求值时崩溃。
+    let agg = null;
+    let oiMap = new Map();
     if (round === 0) {
       const heavyDue = await isHeavyDue();
       if (heavyDue) {
         // 全市场聚合：OI = Binance(一次全量) + Bybit(ticker自带) + OKX(全量接口)
         const okxOiMap = await fetchOkxOi().catch(() => new Map());
-        const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
+        agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
         // Binance OI 只抓一次，三个模块复用（避免 3×679 请求触发限流卡死）
-        let oiMap = new Map();
         if (payload.binance && payload.binance.length > 0) {
           oiMap = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
         }
@@ -892,7 +894,8 @@ async function main() {
         console.log('Heavy modules (demon/coinfilter) throttled: last run < 30min ago');
       }
 
-      // 前导筛选数据（基于本次 Binance ticker）— 每 15 分钟
+      // 前导筛选数据（基于本次 Binance ticker）— 每 15 分钟。
+      // heavyDue=false 时 relayForward 自行补抓 OI，不依赖 demon/coinfilter 节流。
       if (payload.binance) {
         await relayForward(payload.binance, process.env.DEBUG, agg, oiMap).catch(e => console.error('Forward relay failed:', e.message));
       }
