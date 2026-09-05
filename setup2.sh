@@ -58,7 +58,7 @@ chmod 600 /opt/screener/relay.env
 cat > /opt/screener/run.sh <<'EOF'
 #!/bin/bash
 # 默认运行核心管线；--health 每5分钟检查 stale，异常时自动触发恢复
-if [ "${1:-}" = "--health" ]; then
+if [ "${1:-}" = "--health" ] || [ "${1:-}" = "--monitor" ]; then
   health=$(python3 - <<'PY'
 import json
 import urllib.request
@@ -71,10 +71,10 @@ except Exception:
 PY
   )
   if [ "$health" = "healthy" ]; then
-    echo "===== [$(date -u +%H:%M:%S)] WATCHDOG healthy =====" >> /opt/screener/relay.log
+    echo "===== [$(date -u +%H:%M:%S)] ${1#--} healthy =====" >> /opt/screener/relay.log
   else
-    echo "===== [$(date -u +%H:%M:%S)] WATCHDOG $health, triggering relay =====" >> /opt/screener/relay.log
-    /opt/screener/run.sh
+    echo "===== [$(date -u +%H:%M:%S)] ${1#--} $health =====" >> /opt/screener/relay.log
+    if [ "${1:-}" = "--health" ]; then /opt/screener/run.sh; fi
   fi
 else
   cd /tmp/s 2>/dev/null && timeout 20 git pull --quiet 2>/dev/null && cp -f relay.mjs /opt/screener/relay.mjs 2>/dev/null
