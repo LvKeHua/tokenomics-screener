@@ -465,7 +465,7 @@ th.sortable:hover{color:#60a5fa}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head><body>
-<div id="tabbar"><button class="tab-btn tab-chip active" onclick="switchTab('chip')">🧲 筹码筛选</button><button class="tab-btn tab-demon" onclick="switchTab('demon')">👺 妖币扫描</button><button class="tab-btn tab-coinfilter" onclick="switchTab('coinfilter')">🪙 小币筛选</button><button class="tab-btn tab-forward" onclick="switchTab('forward')">🧭 前导筛选</button><button class="tab-btn tab-watchlist" onclick="switchTab('watchlist')">🧭 筛币工作台</button></div>
+<div id="tabbar"><button class="tab-btn tab-chip active" onclick="switchTab('chip')">🧲 筹码筛选</button><button class="tab-btn tab-demon" onclick="switchTab('demon')">👺 妖币扫描</button><button class="tab-btn tab-coinfilter" onclick="switchTab('coinfilter')">🪙 小币筛选</button><button class="tab-btn tab-forward" onclick="switchTab('forward')">🧭 前导筛选</button><button class="tab-btn tab-watchlist" onclick="switchTab('watchlist')">🧭 筛币工作台</button><button class="tab-btn tab-overlap" onclick="switchTab('overlap')">🎯 涨幅榜重合</button></div>
 <div id="root"><div class="loading-root"><div class="spinner"></div><div class="loading-text">正在加载数据...</div></div></div>
 <script>
 var BASE = (window.location.pathname || "/").replace(/\/+$/, "");
@@ -753,6 +753,7 @@ function forwardLoad() {
     forwardEnv = d.env || null;
     forwardLoaded = true;
     fwdStartAutoRefresh();
+    fwdHistLoad();
     renderForward();
   }).catch(function (err) {
     root.innerHTML = '<div class="empty-msg">🧭 前导数据加载失败: ' + e(err.message) + '<br><br><button class="btn" onclick="forwardLoad()">重试</button></div>';
@@ -761,6 +762,50 @@ function forwardLoad() {
 
 function fwdReload() { forwardLoaded = false; forwardLoad(); }
 
+// ── 📅 历史候选（/api/forward-history，北京日界）──
+var fwdHistData = null, fwdHistLoaded = false, fwdHistOpen = false, fwdJumpSym = null;
+function fwdHistLoad() {
+  fetch(BASE + '/api/forward-history?days=14').then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok && d.history) { fwdHistData = d.history; fwdHistLoaded = true; }
+    renderForward();
+  }).catch(function () { /* 静默失败，面板显示错误 */ fwdHistLoaded = false; renderForward(); });
+}
+function fwdHistToggle() { fwdHistOpen = !fwdHistOpen; renderForward(); }
+function fwdHistPanel() {
+  var H = '';
+  H += '<div class="fwd-bar" style="flex-wrap:wrap;gap:6px;align-items:center;border-top:1px solid var(--border);margin-top:6px;padding-top:6px">';
+  H += '<button class="btn" onclick="fwdHistToggle()">📅 历史候选' + (fwdHistOpen ? ' ▾' : ' ▸') + '</button>';
+  H += '<span class="dim">每天筛选器筛出的蓄水候选（北京日界，可回测）</span>';
+  H += '</div>';
+  if (!fwdHistOpen) return H;
+  if (!fwdHistLoaded) {
+    H += '<div class="empty-msg">历史数据加载中' + (fwdHistData ? '' : '…（首次进入自动拉取）') + '</div>';
+    return H;
+  }
+  if (!fwdHistData) { H += '<div class="empty-msg">历史数据不可用</div>'; return H; }
+  var days = Object.keys(fwdHistData).sort().reverse();
+  if (!days.length) { H += '<div class="empty-msg">暂无历史记录</div>'; return H; }
+  H += '<div class="table-wrap"><table class="tbl fwd-tbl"><thead><tr>';
+  H += '<th>日期(北京)</th><th>候选数</th><th>候选币（点击跳转当前筛选）</th><th>数据源</th></tr></thead><tbody>';
+  days.forEach(function (d) {
+    var h = fwdHistData[d];
+    var cands = h.candidates || [];
+    var chips = cands.map(function (c) {
+      var sym = (c.symbol || '').replace('USDT', '');
+      return '<span style="display:inline-block;padding:1px 6px;margin:1px 2px;background:var(--surface-alt,#152238);border:1px solid var(--border,#233);border-radius:4px;font-size:11px" onclick="fwdHistJump(\'' + sym + '\')">' + sym + ' <span class="dim">' + (c.forward_score != null ? c.forward_score : '') + '</span></span>';
+    }).join('');
+    var src = h.seed ? '<span class="dim">重建(seed)</span>' : '<span style="color:#4ade80">实时</span>';
+    H += '<tr><td class="mono">' + d + '</td><td class="mono">' + h.count + '</td><td>' + (chips || '<span class="dim">—</span>') + '</td><td>' + src + '</td></tr>';
+  });
+  H += '</tbody></table></div>';
+  return H;
+}
+function fwdHistJump(sym) {
+  fwdHistOpen = false;
+  fwdJumpSym = sym;
+  renderForward();
+}
+
 
 // ── 筛选/排序 ──
 function fwdFiltered() {
@@ -768,6 +813,7 @@ function fwdFiltered() {
   if (fTag === 'acc') rows = rows.filter(function (r) { return r.signal === 'acc_candidate'; });
   else if (fTag === 'avoid') rows = rows.filter(function (r) { return r.volume_oi_ratio >= 5; });
   else if (fTag === 'watch') rows = rows.filter(function (r) { return r.signal === 'watch'; });
+  if (fwdJumpSym) rows = rows.filter(function (r) { return (r.symbol || '').indexOf(fwdJumpSym) >= 0 || (r.base_asset || '').indexOf(fwdJumpSym) >= 0; });
   // OI 范围过滤（默认不设限 = 全市场）
   if (fwdOiMin != null) rows = rows.filter(function (r) { return (r.oi_value || 0) >= fwdOiMin; });
   if (fwdOiMax != null) rows = rows.filter(function (r) { return (r.oi_value || 0) <= fwdOiMax; });
@@ -880,6 +926,7 @@ function renderForward() {
   H += '<span class="dim" id="fwd-oi-status">' + (fwdOiMin != null || fwdOiMax != null ? '🔍 已过滤 OI ' + (fwdOiMin != null ? (fwdOiMin/1e6) : '0') + 'M ~ ' + (fwdOiMax != null ? (fwdOiMax/1e6) : '∞') + 'M' : '未过滤（全市场）') + '</span>';
   H += '</div>';
   H += '<div class="fwd-stats">🧭候选 ' + accN + ' · ⛔回避 ' + avoidN + ' · 👁已标记 ' + watchN + '</div>';
+  H += fwdHistPanel();
 
   if (rows.length === 0) {
     H += '<div class="empty-msg">没有符合条件的币。</div>';
@@ -1832,7 +1879,58 @@ function renderCoinfilter(container) {
 // 数据: GET /api/screener（服务端合并 forward + coinfilter + data，计算环境闸门/排除层/告警）
 // 规则: 硬门槛五要素(下行保护 dn10 3.3%) + 强度分(叙事+1) + 事件回避(-3, fwd5 -1.7%)
 // ═══════════════════════════════════════════════════════════
-var scData = [], scLoaded = false, scTag = '', scSort = 'forward_score', scAsc = false;
+var scData = [], scLoaded = false, scTag = '', scSort = 'forward_score', scAsc = false, scAppearTotal = 0;
+var scEnv = null, scSources = null, scUpdated = null, scStale = true;
+// 历史出现面板
+var scAhHours = 24, scAhCache = {};
+function scAhSet(h) { scAhHours = h; scAhLoad(); }
+function scAhLoad() {
+  var panel = document.getElementById('sc-ah-panel');
+  var status = document.getElementById('sc-ah-status');
+  if (!panel) return;
+  if (scAhCache[scAhHours]) { scAhRender(scAhCache[scAhHours]); return; }
+  panel.innerHTML = '<div class="empty-msg" style="padding:14px">🕘 正在查询 ' + scAhHours + ' 小时内入选过的币...</div>';
+  if (status) status.innerHTML = '';
+  fetch(BASE + '/api/appear-history?hours=' + scAhHours).then(function (r) { return r.json(); }).then(function (d) {
+    if (d.error) throw new Error(d.error);
+    scAhCache[scAhHours] = d;
+    scAhRender(d);
+  }).catch(function (err) {
+    panel.innerHTML = '<div class="empty-msg" style="padding:14px">查询失败: ' + e(err.message) + ' <button class="btn btn-sm" onclick="scAhLoad()">重试</button></div>';
+  });
+}
+function scAhRender(d) {
+  var panel = document.getElementById('sc-ah-panel');
+  var status = document.getElementById('sc-ah-status');
+  if (!panel) return;
+  if (status) status.innerHTML = '共 ' + d.count + ' 个币';
+  var rows = d.data || [];
+  if (!rows.length) { panel.innerHTML = '<div class="empty-msg" style="padding:14px">该时间范围内没有币入选过候选池</div>'; return; }
+  var H = '<div class="table-wrap" style="margin-top:6px"><table class="tbl fwd-tbl"><thead><tr>';
+  H += '<th>币种</th><th>首次入选</th><th>最后入选</th><th>入选天数</th><th>出现次数</th><th>最高评分</th><th></th>';
+  H += '</tr></thead><tbody>';
+  rows.forEach(function (r) {
+    var fs = r.first_seen, ls = r.last_seen;
+    function fmt(iso) {
+      if (!iso) return '—';
+      var t = new Date(iso);
+      if (isNaN(t.getTime())) return iso;
+      var bj = new Date(t.getTime() + 8 * 3600 * 1000);
+      return ('0' + (bj.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + bj.getUTCDate()).slice(-2) + ' ' + ('0' + bj.getUTCHours()).slice(-2) + ':' + ('0' + bj.getUTCMinutes()).slice(-2);
+    }
+    H += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">';
+    H += '<td class="mono"><b>' + e(r.base_asset) + '</b></td>';
+    H += '<td class="mono" style="font-size:11px;color:#94a3b8">' + fmt(fs) + '</td>';
+    H += '<td class="mono" style="font-size:11px;color:#34d399">' + fmt(ls) + '</td>';
+    H += '<td class="mono">' + r.days + '天</td>';
+    H += '<td class="mono" style="' + (r.appear_count >= 10 ? 'color:#fbbf24;font-weight:800' : (r.appear_count >= 5 ? 'color:#f59e0b;font-weight:700' : 'color:#94a3b8')) + '">' + (r.appear_count > 0 ? r.appear_count + '次' : '—') + '</td>';
+    H += '<td class="mono score">' + (r.best_score != null ? r.best_score : '—') + '</td>';
+    H += '<td><button class="btn btn-sm" onclick="evJump(\'' + r.base_asset + '\')">查看</button></td>';
+    H += '</tr>';
+  });
+  H += '</tbody></table></div>';
+  panel.innerHTML = H;
+}
 // OI 范围自定义（客户端过滤，默认不设限 = 全市场，逻辑不变）
 var scOiMin = null, scOiMax = null;
 
@@ -1860,6 +1958,263 @@ rD = function () {
   if (__scRD) __scRD();
 };
 
+// ═══════════════════════════════════════════════════════════
+// 🎯 涨幅榜重合 视图（第 6 tab）— 每日候选池 ∩ 当日涨幅榜
+// 数据: GET /api/overlap-stats（服务端算重合，候选=forward 归档，涨幅榜=ticker 归档）
+// 口径: 北京日界；涨幅榜=Binance 永续 24h 涨幅 TopN；minvol 过滤僵尸币
+// ═══════════════════════════════════════════════════════════
+// ⚡ 事件雷达（第 6 tab）— 上榜 TopN 或单日涨幅 ≥20% 的事件记录
+// 数据: GET /api/events（候选池归档 + 涨幅榜归档 合并推导，北京日界）
+// 视图: KPI 卡片 + 趋势图 + 事件明细 + 命中率漏斗
+// ═══════════════════════════════════════════════════════════
+// 📅 日榜回看（第 6 tab）— 点开某一天 → 看当天涨幅榜，标注筛选器候选
+// 数据: GET /api/day-gainers?date=YYYY-MM-DD&topn=N（候选关联 = 往前30天候选池归档）
+// 视图: 日期列表 → 点击展开单日完整榜（命中候选高亮 + 领先天数 + 评分）
+// ═══════════════════════════════════════════════════════════
+// 📅 日榜回看 Pro（第 6 tab）— 玻璃拟态 + 骨架屏 + 缓存
+// 数据: GET /api/day-gainers?date=YYYY-MM-DD&topn=N
+// 体验: 已加载日期本地缓存 → 切换秒开；骨架屏加载；行动画；涨幅条
+// ═══════════════════════════════════════════════════════════
+var dgData = null, dgLoaded = false, dgDays = 14, dgTopN = 30, dgActive = null;
+var dgPerf = null, dgPerfLoaded = false;
+var dgCache = {};   // date -> {detail, ts}
+var dgFetching = null;
+
+// ── 骨架屏（加载中）──
+function dgSkeleton() {
+  var sk = function (w) {
+    return '<div style="height:14px;border-radius:6px;background:linear-gradient(90deg,rgba(255,255,255,0.04),rgba(255,255,255,0.10),rgba(255,255,255,0.04));background-size:200% 100%;animation:dgShimmer 1.4s infinite;width:' + w + '"></div>';
+  };
+  var H = '<div class="fwd-wrap">';
+  H += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">';
+  for (var i = 0; i < 8; i++) H += '<div style="width:92px;height:28px;border-radius:8px;background:rgba(255,255,255,0.05)"></div>';
+  H += '</div>';
+  H += '<div style="display:flex;gap:8px;margin:10px 0">' + sk('38%') + sk('25%') + sk('20%') + '</div>';
+  H += '<div style="border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:14px;background:rgba(255,255,255,0.02)">';
+  for (var r = 0; r < 8; r++) H += '<div style="display:flex;gap:10px;margin:10px 0">' + sk('6%') + sk('12%') + sk('10%') + sk('14%') + sk('18%') + sk('12%') + sk('8%') + sk('8%') + '</div>';
+  H += '</div></div>';
+  return '<style>@keyframes dgShimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}</style>' + H;
+}
+
+function dgLoad() {
+  var root = document.getElementById('root');
+  root.innerHTML = dgSkeleton();
+  fetch(BASE + '/api/overlap-stats?days=' + dgDays + '&topn=20&minvol=0')
+    .then(function (r) { return r.json(); }).then(function (d) {
+      if (d.error && !d.history) throw new Error(d.error);
+      var hist = d.history || {};
+      var dates = Object.keys(hist).filter(function (ds) { return hist[ds].total_gainers > 0; }).sort().reverse();
+      dgData = { dates: dates };
+      dgLoaded = true;
+      dgPerfLoad();
+      if (dates.length) dgOpen(dates[0], true);
+      else renderDayList();
+    }).catch(function () {
+      root.innerHTML = '<div class="empty-msg">📅 日榜数据加载失败<br><br><button class="btn" onclick="dgLoad()">重试</button></div>';
+    });
+}
+function dgOpen(date, instant) {
+  if (dgActive === date && dgCache[date] && !instant) { renderDayList(); return; }
+  dgActive = date;
+  renderDayList();
+  if (dgCache[date]) { dgData.detail = dgCache[date]; renderDayList(); return; }
+  if (dgFetching) return;
+  dgFetching = date;
+  var seq = date;
+  fetch(BASE + '/api/day-gainers?date=' + date + '&topn=' + dgTopN)
+    .then(function (r) { return r.json(); }).then(function (d) {
+      if (seq !== dgFetching) return;
+      if (d.error) throw new Error(d.error);
+      dgCache[date] = d;
+      if (dgActive === date) { dgData.detail = d; renderDayList(); }
+    }).catch(function () {
+      if (seq !== dgFetching) return;
+      if (dgActive === date) { dgData.detail = null; renderDayList(); }
+    }).finally(function () { dgFetching = null; });
+}
+function dgSetTopN(n) {
+  dgTopN = n; dgCache = {};
+  if (dgActive) dgOpen(dgActive);
+}
+
+// ── 📊 候选池表现（fwd 收益 vs BTC）──
+function dgPerfLoad() {
+  fetch(BASE + '/api/perf?days=' + dgDays)
+    .then(function (r) { return r.json(); }).then(function (d) {
+      if (d.error && !d.summary) throw new Error(d.error);
+      dgPerf = d;
+      dgPerfLoaded = true;
+      renderDayList();
+    }).catch(function () { dgPerfLoaded = false; });
+}
+function dgPerfBar(v, maxV, invert) {
+  var w = maxV > 0 ? Math.max(3, Math.round(Math.abs(v) / maxV * 100)) : 3;
+  var color = v >= 0 ? 'linear-gradient(90deg,#10b981,#34d399)' : 'linear-gradient(90deg,#ef4444,#f87171)';
+  return '<div style="display:flex;align-items:center;gap:6px"><div style="width:60px;height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden"><div style="height:100%;width:' + w + '%;background:' + color + ';border-radius:3px"></div></div><span style="font-size:11.5px;font-weight:700;color:' + (v >= 0 ? '#34d399' : '#f87171') + '">' + (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%</span></div>';
+}
+
+// ── 工具：bar-in-cell 涨幅条 ──
+function dgBar(chg, maxChg) {
+  var w = Math.max(4, Math.round(Math.abs(chg) / maxChg * 100));
+  var color = chg >= 0 ? 'linear-gradient(90deg,#10b981,#34d399)' : 'linear-gradient(90deg,#ef4444,#f87171)';
+  return '<div style="display:flex;align-items:center;gap:6px"><div style="width:70px;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;flex-shrink:0"><div style="height:100%;width:' + w + '%;background:' + color + ';border-radius:3px"></div></div><span style="font-weight:700;font-size:12.5px;color:' + (chg >= 0 ? '#34d399' : '#f87171') + '">' + (chg >= 0 ? '+' : '') + chg + '%</span></div>';
+}
+
+function renderDayList() {
+  var root = document.getElementById('root');
+  if (!dgData) { root.innerHTML = '<div class="empty-msg">暂无数据</div>'; return; }
+  var dates = dgData.dates || [];
+  var detail = dgData.detail || null;
+  var loading = dgActive && !detail;
+
+  var H = '<div class="fwd-wrap">';
+
+  // ── 顶部工具条 ──
+  H += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">';
+  H += '<span style="font-size:15px;font-weight:800;background:linear-gradient(90deg,#60a5fa,#34d399);-webkit-background-clip:text;background-clip:text;color:transparent">📅 日榜回看</span>';
+  H += '<span class="dim" style="font-size:12px">点日期看当天涨幅榜，🏆 = 你的筛选器筛出过</span>';
+  H += '<span style="margin-left:auto;display:flex;gap:4px;align-items:center">';
+  H += '<span class="dim" style="font-size:12px">榜长</span>';
+  [20, 30, 50].forEach(function (n) {
+    H += '<button class="btn btn-sm' + (dgTopN === n ? ' btn-active' : '') + '" style="padding:4px 10px;border-radius:8px" onclick="dgSetTopN(' + n + ')">' + n + '</button>';
+  });
+  H += '<button class="btn btn-sm" style="padding:4px 10px;border-radius:8px" onclick="dgLoad()">⟳ 刷新</button>';
+  H += '</span></div>';
+
+  // ── 日期胶囊行 ──
+  H += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">';
+  dates.forEach(function (ds) {
+    var active = ds === dgActive;
+    H += '<button class="btn btn-sm' + (active ? ' btn-active' : '') + '" style="padding:6px 14px;border-radius:999px;font-size:12.5px;letter-spacing:.3px;' + (active ? 'background:linear-gradient(135deg,rgba(59,130,246,0.25),rgba(16,185,129,0.15));border-color:rgba(96,165,250,0.6);color:#93c5fd;box-shadow:0 0 14px rgba(59,130,246,0.15)' : '') + '" onclick="dgOpen(\'' + ds + '\')">' + ds + '</button>';
+  });
+  H += '</div>';
+
+  // ── 📊 候选池表现分析 ──
+  if (dgPerf && dgPerf.summary) {
+    var s = dgPerf.summary;
+    H += '<div style="border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:14px 16px;margin-bottom:14px;background:linear-gradient(160deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))">';
+    H += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="font-size:13px;font-weight:800;color:#e2e8f0">📊 候选池表现</span><span class="dim" style="font-size:11px">每日入选候选的 fwd 收益 vs BTC（' + dgPerf.summary.n_days + ' 天样本）</span></div>';
+    H += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">';
+    H += '<div><div class="dim" style="font-size:10px;letter-spacing:.4px">FWD 1D 均值</div>' + dgPerfBar(s.f1_mean, Math.max(Math.abs(s.f1_mean || 0), 0.05), false) + '</div>';
+    H += '<div><div class="dim" style="font-size:10px;letter-spacing:.4px">FWD 3D 均值</div>' + dgPerfBar(s.f3_mean, Math.max(Math.abs(s.f3_mean || 0), 0.05), false) + '</div>';
+    H += '<div><div class="dim" style="font-size:10px;letter-spacing:.4px">FWD 5D 均值</div>' + dgPerfBar(s.f5_mean, Math.max(Math.abs(s.f5_mean || 0), 0.05), false) + '</div>';
+    H += '<div><div class="dim" style="font-size:10px;letter-spacing:.4px">超额 3D（vs BTC）</div>' + dgPerfBar(s.excess_f3_mean, Math.max(Math.abs(s.excess_f3_mean || 0), 0.05), false) + '</div>';
+    H += '<div style="border-left:1px solid rgba(255,255,255,0.08);padding-left:12px"><div class="dim" style="font-size:10px;letter-spacing:.4px">3D 胜率</div><div style="font-size:18px;font-weight:800;color:#4ade80">' + (s.win3 != null ? s.win3.toFixed(1) : '—') + '%</div></div>';
+    H += '</div>';
+    H += '<div class="dim" style="font-size:10px;margin-top:8px">fwd = 入选日收盘 → +N 日收盘；种子日价格由日线补齐（08-04~08-10），08-11 起实时归档</div>';
+    H += '</div>';
+  }
+
+  // ── 详情 ──
+  if (dgActive && detail && detail.date === dgActive) {
+    var gs = detail.gainers || [];
+    var hitN = gs.filter(function (g) { return g.ever_candidate; }).length;
+    var maxChg = 1;
+    gs.forEach(function (g) { if (Math.abs(g.change_24h_pct) > maxChg) maxChg = Math.abs(g.change_24h_pct); });
+
+    // 统计条
+    H += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
+    H += '<div style="flex:1;min-width:130px;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:10px 14px;background:linear-gradient(160deg,rgba(255,255,255,0.045),rgba(255,255,255,0.015));backdrop-filter:blur(6px)">';
+    H += '<div class="dim" style="font-size:10.5px;letter-spacing:.5px">榜单日期</div>';
+    H += '<div style="font-size:16px;font-weight:800;color:#e2e8f0">' + detail.date + '</div></div>';
+    H += '<div style="flex:1;min-width:130px;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:10px 14px;background:linear-gradient(160deg,rgba(255,255,255,0.045),rgba(255,255,255,0.015))">';
+    H += '<div class="dim" style="font-size:10.5px;letter-spacing:.5px">榜单长度</div>';
+    H += '<div style="font-size:16px;font-weight:800;color:#e2e8f0">Top ' + gs.length + '</div></div>';
+    H += '<div style="flex:1;min-width:130px;border:1px solid rgba(96,165,250,0.25);border-radius:14px;padding:10px 14px;background:linear-gradient(160deg,rgba(59,130,246,0.12),rgba(16,185,129,0.06))">';
+    H += '<div class="dim" style="font-size:10.5px;letter-spacing:.5px">🏆 筛选器命中</div>';
+    H += '<div style="font-size:16px;font-weight:800;color:#4ade80">' + hitN + ' / ' + gs.length + '</div></div>';
+    H += '</div>';
+
+    // 表
+    H += '<div style="border:1px solid rgba(255,255,255,0.07);border-radius:14px;overflow:hidden;background:rgba(255,255,255,0.015)">';
+    H += '<table class="tbl fwd-tbl" style="width:100%;border-collapse:collapse;font-size:12.5px"><thead><tr style="background:rgba(255,255,255,0.03)">';
+    ['#', '币种', '24H 涨幅', '成交额', '筛选器状态', '入选价 → 上榜价', '埋伏收益', '领先(首次入选·次数)', '评分', ''].forEach(function (h) {
+      H += '<th style="padding:10px 12px;text-align:left;font-size:11px;color:#64748b;letter-spacing:.5px;font-weight:600;border-bottom:1px solid rgba(255,255,255,0.06)">' + h + '</th>';
+    });
+    H += '</tr></thead><tbody>';
+    gs.forEach(function (g, idx) {
+      var isHit = g.ever_candidate;
+      var lateHit = isHit && g.first_seen && g.first_seen > dgActive;
+      var rowBg = g.is_candidate ? 'rgba(16,185,129,0.08)' : (isHit ? 'rgba(251,191,36,0.06)' : 'transparent');
+      var statHtml;
+      if (g.is_candidate) statHtml = '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:700;background:rgba(16,185,129,0.15);color:#34d399">🏆 当天候选</span>';
+      else if (lateHit) statHtml = '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:600;background:rgba(239,68,68,0.12);color:#f87171">上榜后才入选</span>';
+      else if (isHit) statHtml = '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:700;background:rgba(251,191,36,0.12);color:#fbbf24">🏆 之前筛出过</span>';
+      else statHtml = '<span class="dim">—</span>';
+      var vol = g.volume_24h_usdt != null ? (g.volume_24h_usdt >= 1e9 ? (g.volume_24h_usdt / 1e9).toFixed(1) + 'B' : (g.volume_24h_usdt / 1e6).toFixed(1) + 'M') : '—';
+      var leadHtml = g.ever_candidate ? (lateHit ? '<span class="dim">—</span>' : (g.lead_days > 0 ? '<span style="font-weight:700;color:#fbbf24">+' + g.lead_days + 'd</span>' : '<span style="color:#94a3b8">同天</span>')) : '<span class="dim">—</span>';
+      var leadTimeHtml = '';
+      if (g.ever_candidate && g.first_seen) {
+        // first_seen 是 ISO 时间戳，转北京时间显示（分钟级）
+        var ts = g.first_seen.indexOf('T') > 0 ? new Date(g.first_seen) : null;
+        if (ts && !isNaN(ts.getTime())) {
+          var bj = new Date(ts.getTime() + 8 * 3600 * 1000);
+          var mo = ('0' + (bj.getUTCMonth() + 1)).slice(-2), dd = ('0' + bj.getUTCDate()).slice(-2);
+          var hh = ('0' + bj.getUTCHours()).slice(-2), mm = ('0' + bj.getUTCMinutes()).slice(-2);
+          leadTimeHtml = '<div style="font-size:10.5px;color:#64748b;margin-top:2px">' + mo + '-' + dd + ' ' + hh + ':' + mm + (g.cand_days > 1 ? ' · 入选' + g.cand_days + '天' : '') + '</div>';
+        }
+      }
+      H += '<tr style="background:' + rowBg + ';animation:dgFadeIn .35s ease ' + Math.min(idx * 25, 400) + 'ms both;border-bottom:1px solid rgba(255,255,255,0.04);transition:background .15s" onmouseover="this.style.background=\'rgba(255,255,255,0.05)\'" onmouseout="this.style.background=\'' + rowBg + '\'">';
+      H += '<td style="padding:9px 12px;color:#64748b;font-size:11px">' + g.rank + '</td>';
+      H += '<td style="padding:9px 12px;font-weight:800;color:#e2e8f0">' + g.base_asset + '</td>';
+      H += '<td style="padding:9px 12px">' + dgBar(g.change_24h_pct, maxChg) + '</td>';
+      H += '<td style="padding:9px 12px;color:#94a3b8;font-size:11.5px">' + vol + '</td>';
+      H += '<td style="padding:9px 12px">' + statHtml + '</td>';
+      var entryCell = g.ever_candidate && g.entry_price != null ? '<span class="mono" style="font-size:11px;color:#94a3b8">' + g.entry_price + ' <span style="color:#475569">→</span> ' + g.gain_price + '</span>' : '<span class="dim">—</span>';
+      var entryGainHtml;
+      if (g.ever_candidate && g.entry_gain_pct != null) {
+        var gc = g.entry_gain_pct >= 0 ? '#34d399' : '#f87171';
+        var gf = g.entry_gain_pct >= 0 ? '+' : '';
+        entryGainHtml = '<span style="font-weight:800;font-size:12px;color:' + gc + '">' + gf + (g.entry_gain_pct * 100).toFixed(1) + '%</span>';
+      } else entryGainHtml = '<span class="dim">—</span>';
+      H += '<td style="padding:9px 12px">' + entryCell + '</td>';
+      H += '<td style="padding:9px 12px">' + entryGainHtml + '</td>';
+      H += '<td style="padding:9px 12px">' + leadHtml + leadTimeHtml + '</td>';
+      H += '<td style="padding:9px 12px;color:#94a3b8;font-size:11.5px">' + (g.forward_score != null ? g.forward_score : '—') + '</td>';
+      H += '<td style="padding:9px 12px"><button class="btn btn-sm" style="padding:3px 10px;border-radius:8px;font-size:11px" onclick="evJump(\'' + g.base_asset + '\')">查看</button></td>';
+      H += '</tr>';
+    });
+    H += '</tbody></table></div>';
+    H += '<div class="dim" style="font-size:11px;margin-top:10px">🏆 当天候选 = 该币当天在筛选器候选池；之前筛出过 = 往前30天内入选过；**埋伏收益 = 首次入选日收盘价 → 上榜日收盘价**（= 筛选器提前埋伏的账面收益，非当日涨幅）。点击币可跳前导筛选。</div>';
+  } else if (dgActive && loading) {
+    H += dgSkeleton();
+  } else {
+    H += '<div class="empty-msg">点击上方日期查看当天涨幅榜</div>';
+  }
+  H += '<style>@keyframes dgFadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}</style>';
+  H += '</div>';
+  root.innerHTML = H;
+}
+function evJump(sym) {
+  try { switchTab('forward'); } catch (e) {}
+  setTimeout(function () {
+    if (typeof fwdHistJump === 'function') fwdHistJump(sym);
+  }, 300);
+}
+
+var __ovSwitchTab = (typeof switchTab === 'function') ? switchTab : null;
+switchTab = function (t) {
+  if (t === 'overlap') {
+    curTab = t;
+    var tb = document.getElementById('tabbar');
+    if (tb) {
+      tb.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
+      var btn = tb.querySelector('.tab-overlap');
+      if (btn) btn.classList.add('active');
+    }
+    if (!dgLoaded) dgLoad(); else renderDayList();
+    return;
+  }
+  if (__ovSwitchTab) { __ovSwitchTab(t); return; }
+  if (t === 'demon' && typeof renderDemon === 'function') { renderDemon(); return; }
+  if (typeof rD === 'function') rD();
+};
+var __ovRD = (typeof rD === 'function') ? rD : null;
+rD = function () {
+  if (curTab === 'overlap') { renderDayList(); return; }
+  if (__ovRD) __ovRD();
+};
+
 // 🔄 全局自动刷新：每 5 分钟按当前 tab 重新拉取（与 relay 更新周期对齐）
 setInterval(function () {
   try {
@@ -1868,24 +2223,35 @@ setInterval(function () {
     else if (curTab === 'coinfilter' && typeof coinfilterLoad === 'function') { coinfilterLoad(); }
     else if (curTab === 'forward' && typeof forwardLoad === 'function') { forwardLoad(); }
     else if (curTab === 'watchlist' && typeof scLoad === 'function') { scLoad(); }
+    else if (curTab === 'overlap' && typeof dgLoad === 'function') { dgLoad(); }
   } catch (e) { /* 静默失败，下次再试 */ }
 }, 300000); // 5 分钟
 
 function scLoad() {
   var root = document.getElementById('root');
+  var controller = new AbortController();
+  var timer = setTimeout(function () { controller.abort(); }, 20000);
   root.innerHTML = '<div class="empty-msg">🧭 正在加载筛币工作台（L0 环境闸门 + 候选池 + 排除层 + 告警）...</div>';
-  fetch(BASE + '/api/screener').then(function (r) { return r.json(); }).then(function (d) {
+  fetch(BASE + '/api/screener?t=' + Date.now(), { cache: 'no-store', signal: controller.signal }).then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function (d) {
     var rows = d.data || [];
     if (d.error && !rows.length) throw new Error(d.error);
     scData = rows;
     scEnv = d.env || null;
+    scSources = d.sources || null;
+    scUpdated = d.updated || null;
+    scStale = !!d.stale;
+    scAppearTotal = d.appear_total || 0;
+    scAhCache = {};
     scLoaded = true;
     renderScreener();
   }).catch(function (err) {
-    root.innerHTML = '<div class="empty-msg">🧭 数据加载失败: ' + e(err.message) + '<br><br><button class="btn" onclick="scLoad()">重试</button></div>';
-  });
+    var message = err.name === 'AbortError' ? '请求超时（20秒）' : err.message;
+    root.innerHTML = '<div class="empty-msg">🧭 数据加载失败: ' + e(message) + '<br><br><button class="btn" onclick="scLoad()">重试</button></div>';
+  }).finally(function () { clearTimeout(timer); });
 }
-var scEnv = null;
 
 function scFiltered() {
   var rows = scData.slice();
@@ -1925,7 +2291,30 @@ function scClearOiRange() {
 function scSetPreset(t) { scTag = t; renderScreener(); }
 function scSortBy(k) { if (scSort === k) scAsc = !scAsc; else { scSort = k; scAsc = false; } renderScreener(); }
 
+function scAgeText(seconds) {
+  if (seconds == null || !isFinite(seconds)) return '未知';
+  if (seconds < 60) return Math.max(0, Math.round(seconds)) + '秒';
+  if (seconds < 3600) return Math.round(seconds / 60) + '分钟';
+  return (seconds / 3600).toFixed(1) + '小时';
+}
+
+function scFreshnessHtml() {
+  if (!scSources) return '<div class="fwd-hint fwd-hint-na">数据源时间未知，候选池冻结</div>';
+  var labels = { market: '市值', coinfilter: 'OI/行情', forward: '结构评分' };
+  var parts = [];
+  ['market', 'coinfilter', 'forward'].forEach(function (key) {
+    var source = scSources[key] || {};
+    var color = source.stale ? '#f87171' : '#34d399';
+    parts.push('<span style="color:' + color + '">' + labels[key] + ' ' + scAgeText(source.age_seconds) + '</span>');
+  });
+  var updated = scUpdated ? new Date(scUpdated).toLocaleString('zh-CN') : '未知';
+  var cls = scStale ? 'fwd-hint fwd-hint-bear' : 'fwd-hint fwd-hint-bull';
+  var state = scStale ? '数据源过期，候选池已冻结' : '数据源正常';
+  return '<div class="' + cls + '">' + state + ' · ' + parts.join(' · ') + ' · 有效快照 ' + e(updated) + '</div>';
+}
+
 function scEnvHtml() {
+  if (scStale) return '<div class="fwd-hint fwd-hint-bear">L0 环境闸门：冻结（关键数据源过期）</div>';
   if (!scEnv || scEnv.up == null) return '<div class="fwd-hint fwd-hint-na">L0 环境闸门：未知（候选池冻结，保守）</div>';
   if (scEnv.up) return '<div class="fwd-hint fwd-hint-bull">L0 环境闸门：🟢 放行（BTC ' + fP(scEnv.close) + ' &gt; SMA20 ' + fP(scEnv.sma20) + '）— 蓄水候选可启用（验证：涨市 +0.8%/胜率56%）</div>';
   return '<div class="fwd-hint fwd-hint-bear">L0 环境闸门：🔴 冻结（BTC ' + fP(scEnv.close) + ' &lt; SMA20 ' + fP(scEnv.sma20) + '）— 蓄水候选降级为 env_bear，禁止按候选池进场（验证：跌市 -5.3%/胜率31%）</div>';
@@ -1935,6 +2324,7 @@ function scSigTag(r) {
   var t = [];
   if (r.effective_signal === 'acc_candidate') t.push('<span class="tag tag-acc">🧭蓄水候选</span>');
   else if (r.effective_signal === 'acc_candidate_env_bear') t.push('<span class="tag tag-watch">🧭候选(环境冻结)</span>');
+  else if (r.effective_signal === 'acc_candidate_stale') t.push('<span class="tag tag-danger">候选(数据过期)</span>');
   else if (r.forward_signal === 'avoid_event' || r.event_day) t.push('<span class="tag tag-danger">⛔事件回避</span>');
   else if (r.forward_signal === 'watch') t.push('<span class="tag tag-watch">👁观察</span>');
   if (r.thin_book) t.push('<span class="tag tag-watch">⚠️薄盘口</span>');
@@ -1961,6 +2351,7 @@ function renderScreener() {
   var nThin = scData.filter(function (r) { return r.thin_book; }).length;
 
   var H = '<div class="fwd-wrap">';
+  H += scFreshnessHtml();
   H += scEnvHtml();
   H += '<div class="fwd-bar">';
   H += '<button class="btn' + (scTag === '' ? ' btn-active' : '') + '" onclick="scSetPreset(\'\')">🎯 全部 (' + rows.length + ')</button>';
@@ -1978,7 +2369,17 @@ function renderScreener() {
   H += '<button class="btn btn-sm" onclick="scClearOiRange()">清除</button>';
   H += '<span class="dim" id="sc-oi-status">' + (scOiMin != null || scOiMax != null ? '🔍 已过滤 OI ' + (scOiMin != null ? (scOiMin/1e6) : '0') + 'M ~ ' + (scOiMax != null ? (scOiMax/1e6) : '∞') + 'M' : '未过滤（全市场）') + '</span>';
   H += '</div>';
-  H += '<div class="fwd-stats">🧭候选 ' + nAcc + ' · ⛔回避 ' + nAvoid + ' · 🔔告警 ' + nAlert + ' · ⚠️薄盘口 ' + nThin + '</div>';
+  H += '<div class="fwd-stats">🧭候选 ' + nAcc + ' · ⛔回避 ' + nAvoid + ' · 🔔告警 ' + nAlert + ' · ⚠️薄盘口 ' + nThin + (scAppearTotal > 0 ? ' · 📊 7天出现 ' + scAppearTotal + ' 次' : '') + '</div>';
+  H += '<div class="fwd-bar" style="margin-top:10px;flex-wrap:wrap;gap:6px;align-items:center">';
+  H += '<span class="dim" style="font-weight:700;color:var(--accent,#60a5fa)">🕘 历史出现</span>';
+  H += '<span class="dim">时间范围:</span>';
+  [1,4,6,12,24,48,72,96,120].forEach(function (h) {
+    H += '<button class="btn btn-sm' + (scAhHours === h ? ' btn-active' : '') + '" onclick="scAhSet(' + h + ')">' + (h < 24 ? h + 'h' : (h % 24 === 0 ? (h / 24) + 'd' : h + 'h')) + '</button>';
+  });
+  H += '<button class="btn btn-sm" onclick="scAhLoad()" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;font-weight:700">查询</button>';
+  H += '<span class="dim" id="sc-ah-status"></span>';
+  H += '</div>';
+  H += '<div id="sc-ah-panel"></div>';
 
   if (!rows.length) {
     H += '<div class="empty-msg">没有符合条件的币。</div>';
@@ -1995,6 +2396,7 @@ function renderScreener() {
     H += '<th class="sortable" onclick="scSortBy(\'range_20d\')">横盘20d</th>';
     H += '<th class="sortable" onclick="scSortBy(\'vol_shrink_20d\')">缩量</th>';
     H += '<th class="sortable" onclick="scSortBy(\'forward_score\')">评分</th>';
+    H += '<th class="sortable" onclick="scSortBy(\'appear_count\')">出现次数</th>';
     H += '<th>信号</th><th>告警</th>';
     H += '</tr></thead><tbody>';
     rows.slice(0, 300).forEach(function (r) {
@@ -2012,6 +2414,7 @@ function renderScreener() {
       H += '<td class="mono">' + (r.range_20d != null ? (r.range_20d * 100).toFixed(0) + '%' : '—') + '</td>';
       H += '<td class="mono">' + (r.vol_shrink_20d != null ? (r.vol_shrink_20d * 100).toFixed(0) + '%' : '—') + '</td>';
       H += '<td class="mono score">' + (r.forward_score != null ? r.forward_score : '—') + '</td>';
+      H += '<td class="mono" style="' + (r.appear_count >= 10 ? 'color:#fbbf24;font-weight:800' : (r.appear_count >= 5 ? 'color:#f59e0b;font-weight:700' : 'color:#94a3b8')) + '">' + (r.appear_count > 0 ? r.appear_count + '次' : '—') + '</td>';
       H += '<td>' + scSigTag(r) + '</td>';
       H += '<td>' + scAlertHtml(r) + '</td>';
       H += '</tr>';
