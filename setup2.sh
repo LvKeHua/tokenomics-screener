@@ -115,6 +115,32 @@ cat > /opt/screener/.fallback_disabled <<'EOF'
 EOF
 
 echo ""
+echo ""
+echo "=== 3.5/5 运行资源与日志轮转 ==="
+if ! swapon --show=NAME --noheadings | grep -q /swapfile; then
+  fallocate -l 1G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
+  swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+if ! command -v logrotate >/dev/null 2>&1; then
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq logrotate
+fi
+cat > /etc/logrotate.d/screener-relay <<'EOF'
+/opt/screener/relay.log /opt/screener/manual-*.log {
+  daily
+  rotate 14
+  size 20M
+  compress
+  delaycompress
+  missingok
+  notifempty
+  copytruncate
+}
+EOF
+
 echo "=== 4/5 安装 cron + 定时任务 ==="
 if ! command -v crontab >/dev/null 2>&1; then
   echo "install cron..."
