@@ -1,0 +1,15 @@
+name = "tokenomics-screener"
+main = "cf-worker/worker_v10_inline.mjs"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "MARKET_DATA"
+id = "6d56b8307fd04814892f9c2b15723c02"
+
+[triggers]
+crons = ["0 * * * *"]
+
+[[routes]]
+pattern = "app.slinglab.xyz/screener/*"
+zone_name = "slinglab.xyz"
