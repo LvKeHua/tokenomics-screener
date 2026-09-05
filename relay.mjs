@@ -990,13 +990,16 @@ async function main() {
       const okxOiMap = await fetchOkxOi().catch(() => new Map());
       const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
       const heavyDue = isHeavyDue();
+      let heavyInputsOk = !heavyDue;
       if (heavyDue && payload.binance && payload.binance.length > 0) {
         const liveOi = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
         const minOi = Math.max(100, Math.ceil(payload.binance.length * 0.7));
         if (liveOi.size >= minOi) {
           oiMap = liveOi;
           saveMapCache('oi.json', oiMap);
+          heavyInputsOk = true;
         } else {
+          heavyInputsOk = false;
           console.error(`Heavy OI refresh incomplete: ${liveOi.size}/${payload.binance.length}; using previous cache`);
         }
       }
@@ -1017,7 +1020,7 @@ async function main() {
             console.error('Coinfilter heavy refresh failed:', e.message);
             return false;
           });
-          if (demonOk && coinfilterOk) {
+          if (heavyInputsOk && demonOk && coinfilterOk) {
             markHeavySuccess();
           } else {
             console.error('Heavy modules incomplete; marker not advanced, next cron will retry');
