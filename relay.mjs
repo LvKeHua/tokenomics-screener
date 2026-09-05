@@ -668,9 +668,22 @@ async function relayCoinfilter(binanceRows, oiMap, fundingMap, depthMap, listing
 
   const syms = candidates.map(r => r.symbol);
   oiMap = oiMap || await fetchOpenInterest(syms);
-  fundingMap = fundingMap || await fetchFundingRates(syms);
-  // depth: 全量抓取，4并发+150ms限速，约85秒完成679币
-  depthMap = depthMap || await fetchOrderbookDepths(syms);
+  const cachedFunding = loadMapCache('funding.json', 3 * 60 * 60 * 1000);
+  if (fundingMap) {
+    fundingMap = mergeMaps(cachedFunding, fundingMap);
+  } else {
+    const liveFunding = await fetchFundingRates(syms);
+    fundingMap = mergeMaps(cachedFunding, liveFunding);
+  }
+  if (fundingMap.size > 0) saveMapCache('funding.json', fundingMap);
+  const cachedDepth = loadMapCache('depth.json', 3 * 60 * 60 * 1000);
+  if (depthMap) {
+    depthMap = mergeMaps(cachedDepth, depthMap);
+  } else {
+    const liveDepth = await fetchOrderbookDepths(syms);
+    depthMap = mergeMaps(cachedDepth, liveDepth);
+  }
+  if (depthMap.size > 0) saveMapCache('depth.json', depthMap);
   listingMap = listingMap || await fetchListingDates();
   console.log(`Coinfilter: got OI=${oiMap.size} funding=${fundingMap.size} depth=${depthMap.size} listing=${listingMap.size}`);
 
@@ -1135,7 +1148,10 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
   const oiHistMap = new Map();
 
   const listingMap = await fetchListingDates();
-  const fundingMap = await fetchFundingRates(syms);
+  const cachedFunding = loadMapCache('funding.json', 3 * 60 * 60 * 1000);
+  const liveFunding = await fetchFundingRates(syms);
+  const fundingMap = mergeMaps(cachedFunding, liveFunding);
+  if (fundingMap.size > 0) saveMapCache('funding.json', fundingMap);
   const btcKlines = klineMap.get('BTCUSDT') || [];
   let btcEnv = { up: null, close: null, sma20: null };
   if (btcKlines.length >= 20) {
