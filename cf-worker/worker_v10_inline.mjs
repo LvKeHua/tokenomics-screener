@@ -1882,55 +1882,89 @@ function renderCoinfilter(container) {
 // ═══════════════════════════════════════════════════════════
 var scData = [], scLoaded = false, scTag = '', scSort = 'forward_score', scAsc = false, scAppearTotal = 0;
 var scEnv = null, scSources = null, scUpdated = null, scStale = true;
-// 历史出现面板
-var scAhHours = 24, scAhCache = {};
-function scAhSet(h) { scAhHours = h; scAhLoad(); }
+// 历史出现面板：快捷窗口 + 任意北京日期范围 + 全部归档。
+var scAhMode = 'hours', scAhHours = 24, scAhStart = '2026-08-04', scAhEnd = scBjToday(), scAhCache = {};
+
+function scBjToday() {
+  return new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+}
+
+function scAhPreset(mode, value) {
+  scAhMode = mode;
+  if (mode === 'hours') scAhHours = value;
+  renderScreener();
+  scAhLoad();
+}
+
+function scAhCustom() {
+  var start = document.getElementById('sc-ah-start');
+  var end = document.getElementById('sc-ah-end');
+  if (!start || !end || !start.value || !end.value) return;
+  if (start.value > end.value) {
+    document.getElementById('sc-ah-panel').innerHTML = '<div class="empty-msg" style="padding:14px">开始日期不能晚于结束日期</div>';
+  } else {
+    scAhStart = start.value;
+    scAhEnd = end.value;
+    scAhMode = 'range';
+    renderScreener();
+    scAhLoad();
+  }
+}
+function scAhRequest() {
+  if (scAhMode === 'all') return { key: 'all', url: BASE + '/api/appear-history?all=1' };
+  if (scAhMode === 'range') return { key: scAhStart + ':' + scAhEnd, url: BASE + '/api/appear-history?start=' + encodeURIComponent(scAhStart) + '&end=' + encodeURIComponent(scAhEnd) };
+  return { key: 'h:' + scAhHours, url: BASE + '/api/appear-history?hours=' + scAhHours };
+}
+
 function scAhLoad() {
   var panel = document.getElementById('sc-ah-panel');
   var status = document.getElementById('sc-ah-status');
   if (!panel) return;
-  if (scAhCache[scAhHours]) { scAhRender(scAhCache[scAhHours]); return; }
-  panel.innerHTML = '<div class="empty-msg" style="padding:14px">🕘 正在查询 ' + scAhHours + ' 小时内入选过的币...</div>';
+  var request = scAhRequest();
+  if (scAhCache[request.key]) { scAhRender(scAhCache[request.key]); return; }
+  var controller = new AbortController();
+  var timer = setTimeout(function () { controller.abort(); }, 20000);
+  panel.innerHTML = '<div class="empty-msg" style="padding:14px">正在查询历史候选归档...</div>';
   if (status) status.innerHTML = '';
-  fetch(BASE + '/api/appear-history?hours=' + scAhHours).then(function (r) { return r.json(); }).then(function (d) {
-    if (d.error) throw new Error(d.error);
-    scAhCache[scAhHours] = d;
-    scAhRender(d);
-  }).catch(function (err) {
-    panel.innerHTML = '<div class="empty-msg" style="padding:14px">查询失败: ' + e(err.message) + ' <button class="btn btn-sm" onclick="scAhLoad()">重试</button></div>';
-  });
+  fetch(request.url + (request.url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store', signal: controller.signal }).then(function (response) {
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return response.json();
+  }).then(function (data) {
+    if (data.error) throw new Error(data.error);
+    scAhCache[request.key] = data;
+    scAhStart = data.start || scAhStart;
+    scAhEnd = data.end || scAhEnd;
+    scAhRender(data);
+  }).catch(function (error) {
+    var message = error.name === 'AbortError' ? '请求超时（20秒）' : error.message;
+    panel.innerHTML = '<div class="empty-msg" style="padding:14px">查询失败: ' + e(message) + ' <button class="btn btn-sm" onclick="scAhLoad()">重试</button></div>';
+  }).finally(function () { clearTimeout(timer); });
 }
-function scAhRender(d) {
+
+function scAhRender(data) {
   var panel = document.getElementById('sc-ah-panel');
   var status = document.getElementById('sc-ah-status');
   if (!panel) return;
-  if (status) status.innerHTML = '共 ' + d.count + ' 个币';
-  var rows = d.data || [];
+  var range = (data.start || '—') + ' 至 ' + (data.end || '—');
+  if (status) status.innerHTML = '共 ' + data.count + ' 个币 · ' + range + ' · 有归档 ' + (data.archive_days || 0) + '/' + (data.selected_days || 0) + ' 天';
+  var rows = data.data || [];
   if (!rows.length) { panel.innerHTML = '<div class="empty-msg" style="padding:14px">该时间范围内没有币入选过候选池</div>'; return; }
-  var H = '<div class="table-wrap" style="margin-top:6px"><table class="tbl fwd-tbl"><thead><tr>';
-  H += '<th>币种</th><th>首次入选</th><th>最后入选</th><th>入选天数</th><th>出现次数</th><th>最高评分</th><th></th>';
-  H += '</tr></thead><tbody>';
-  rows.forEach(function (r) {
-    var fs = r.first_seen, ls = r.last_seen;
-    function fmt(iso) {
-      if (!iso) return '—';
-      var t = new Date(iso);
-      if (isNaN(t.getTime())) return iso;
-      var bj = new Date(t.getTime() + 8 * 3600 * 1000);
-      return ('0' + (bj.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + bj.getUTCDate()).slice(-2) + ' ' + ('0' + bj.getUTCHours()).slice(-2) + ':' + ('0' + bj.getUTCMinutes()).slice(-2);
-    }
-    H += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">';
-    H += '<td class="mono"><b>' + e(r.base_asset) + '</b></td>';
-    H += '<td class="mono" style="font-size:11px;color:#94a3b8">' + fmt(fs) + '</td>';
-    H += '<td class="mono" style="font-size:11px;color:#34d399">' + fmt(ls) + '</td>';
-    H += '<td class="mono">' + r.days + '天</td>';
-    H += '<td class="mono" style="' + (r.appear_count >= 10 ? 'color:#fbbf24;font-weight:800' : (r.appear_count >= 5 ? 'color:#f59e0b;font-weight:700' : 'color:#94a3b8')) + '">' + (r.appear_count > 0 ? r.appear_count + '次' : '—') + '</td>';
-    H += '<td class="mono score">' + (r.best_score != null ? r.best_score : '—') + '</td>';
-    H += '<td><button class="btn btn-sm" onclick="evJump(\\'' + r.base_asset + '\\')">查看</button></td>';
-    H += '</tr>';
+  function fmt(iso) {
+    if (!iso) return '—';
+    var time = new Date(iso);
+    if (isNaN(time.getTime())) return iso;
+    var bj = new Date(time.getTime() + 8 * 3600000);
+    return bj.getUTCFullYear() + '-' + ('0' + (bj.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + bj.getUTCDate()).slice(-2) + ' ' + ('0' + bj.getUTCHours()).slice(-2) + ':' + ('0' + bj.getUTCMinutes()).slice(-2);
+  }
+  var html = '<div class="table-wrap" style="margin-top:6px"><table class="tbl fwd-tbl"><thead><tr><th>币种</th><th>首次入选</th><th>最后入选</th><th>入选天数</th><th>出现次数</th><th>最高评分</th><th></th></tr></thead><tbody>';
+  rows.forEach(function (row) {
+    var count = row.appear_count == null ? '—' : row.appear_count + '次';
+    var countStyle = row.appear_count >= 10 ? 'color:#fbbf24;font-weight:800' : (row.appear_count >= 5 ? 'color:#f59e0b;font-weight:700' : 'color:#94a3b8');
+    html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td class="mono"><b>' + e(row.base_asset) + '</b></td><td class="mono" style="font-size:11px;color:#94a3b8">' + fmt(row.first_seen) + '</td><td class="mono" style="font-size:11px;color:#34d399">' + fmt(row.last_seen) + '</td><td class="mono">' + row.days + '天</td><td class="mono" style="' + countStyle + '">' + count + '</td><td class="mono score">' + (row.best_score != null ? row.best_score : '—') + '</td><td><button class="btn btn-sm" onclick="evJump(\\'' + row.base_asset + '\\')">查看</button></td></tr>';
   });
-  H += '</tbody></table></div>';
-  panel.innerHTML = H;
+  html += '</tbody></table></div>';
+  if (!data.appear_count_complete) html += '<div class="dim" style="font-size:11px;margin-top:6px">出现次数只在有逐次计数归档的日期精确；更早日期显示“—”。首次/最后入选、入选天数和最高评分来自每日候选归档。</div>';
+  panel.innerHTML = html;
 }
 // OI 范围自定义（客户端过滤，默认不设限 = 全市场，逻辑不变）
 var scOiMin = null, scOiMax = null;
@@ -2371,16 +2405,19 @@ function renderScreener() {
   H += '<span class="dim" id="sc-oi-status">' + (scOiMin != null || scOiMax != null ? '🔍 已过滤 OI ' + (scOiMin != null ? (scOiMin/1e6) : '0') + 'M ~ ' + (scOiMax != null ? (scOiMax/1e6) : '∞') + 'M' : '未过滤（全市场）') + '</span>';
   H += '</div>';
   H += '<div class="fwd-stats">🧭候选 ' + nAcc + ' · ⛔回避 ' + nAvoid + ' · 🔔告警 ' + nAlert + ' · ⚠️薄盘口 ' + nThin + (scAppearTotal > 0 ? ' · 📊 7天出现 ' + scAppearTotal + ' 次' : '') + '</div>';
-  H += '<div class="fwd-bar" style="margin-top:10px;flex-wrap:wrap;gap:6px;align-items:center">';
-  H += '<span class="dim" style="font-weight:700;color:var(--accent,#60a5fa)">🕘 历史出现</span>';
-  H += '<span class="dim">时间范围:</span>';
-  [1,4,6,12,24,48,72,96,120].forEach(function (h) {
-    H += '<button class="btn btn-sm' + (scAhHours === h ? ' btn-active' : '') + '" onclick="scAhSet(' + h + ')">' + (h < 24 ? h + 'h' : (h % 24 === 0 ? (h / 24) + 'd' : h + 'h')) + '</button>';
+  H += '<div style="margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);display:flex;flex-direction:column;gap:9px">';
+  H += '<div class="fwd-bar" style="margin:0;flex-wrap:wrap;gap:6px;align-items:center">';
+  H += '<span class="dim" style="font-weight:700;color:var(--accent,#60a5fa)">🕘 历史出现</span><span class="dim">快捷范围:</span>';
+  [[1,'1h'],[4,'4h'],[12,'12h'],[24,'1d'],[168,'7d'],[720,'30d']].forEach(function (item) {
+    H += '<button class="btn btn-sm' + (scAhMode === 'hours' && scAhHours === item[0] ? ' btn-active' : '') + '" onclick="scAhPreset(\\'hours\\',' + item[0] + ')">' + item[1] + '</button>';
   });
-  H += '<button class="btn btn-sm" onclick="scAhLoad()" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;font-weight:700">查询</button>';
-  H += '<span class="dim" id="sc-ah-status"></span>';
-  H += '</div>';
-  H += '<div id="sc-ah-panel"></div>';
+  H += '<button class="btn btn-sm' + (scAhMode === 'all' ? ' btn-active' : '') + '" onclick="scAhPreset(\\'all\\',0)">全部历史</button>';
+  H += '<span class="dim" id="sc-ah-status"></span></div>';
+  H += '<div class="fwd-bar" style="margin:0;flex-wrap:wrap;gap:6px;align-items:center"><span class="dim">自定义北京日期:</span>';
+  H += '<input id="sc-ah-start" type="date" min="2026-08-04" max="' + scBjToday() + '" value="' + e(scAhStart) + '" style="padding:5px 7px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text)">';
+  H += '<span class="dim">至</span><input id="sc-ah-end" type="date" min="2026-08-04" max="' + scBjToday() + '" value="' + e(scAhEnd) + '" style="padding:5px 7px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text)">';
+  H += '<button class="btn btn-sm' + (scAhMode === 'range' ? ' btn-active' : '') + '" onclick="scAhCustom()">查询日期范围</button>';
+  H += '<span class="dim">可用历史从 2026-08-04 开始</span></div><div id="sc-ah-panel"></div></div>';
 
   if (!rows.length) {
     H += '<div class="empty-msg">没有符合条件的币。</div>';
@@ -2718,48 +2755,70 @@ const n=b.updated||new Date().toISOString();
 await kv.put(dayKey,JSON.stringify({date:b.date,gainers:b.gainers,updated:n,backfilled:true}));
 return json({ok:true,date:b.date,count:b.gainers.length})}catch(e){return json({ok:false,error:e.message},400)}}
 
-// 📊 历史出现：按小时窗口查曾经入选候选池的币（fwd_hist 归档 + appear_count）
-// 窗口: 1/4/6/12/24/48/72/96/120 小时；返回每币 首次入选/最后入选/入选天数/出现次数/最高分
-async function hAH(kv,url){
-  const u=new URL(url);
-  const hours=Math.min(parseInt(u.searchParams.get('hours')||'24',10)||24,120);
-  const now=new Date();
-  const cutoff=new Date(now.getTime()-hours*3600*1000);
-  // 读窗口内所有 fwd_hist 归档（北京日界，覆盖 hours 小时）
-  const daysArr=[];
-  for(let i=0;i<Math.ceil(hours/24)+1;i++){
-    const bj=new Date(now.getTime()+8*3600*1000-i*86400000);
-    daysArr.push(bj.toISOString().slice(0,10));
+// 历史出现：支持小时窗口、任意北京日期范围、以及全部已归档历史。
+const FWD_HISTORY_START='2026-08-04';
+const FWD_HISTORY_MAX_DAYS=1000;
+
+function historyDateRange(start,end){
+  const dates=[];
+  const first=Date.parse(start+'T00:00:00Z'),last=Date.parse(end+'T00:00:00Z');
+  for(let time=first;time<=last;time+=86400000)dates.push(new Date(time).toISOString().slice(0,10));
+  return dates;
+}
+
+function historyRequest(url){
+  const params=new URL(url).searchParams;
+  const today=new Date(Date.now()+8*3600000).toISOString().slice(0,10);
+  const all=params.get('all')==='1';
+  const start=params.get('start'),end=params.get('end');
+  if(all)return{mode:'all',start:FWD_HISTORY_START,end:today,hours:null,cutoff:null};
+  if(start||end){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(start||'')||!/^\d{4}-\d{2}-\d{2}$/.test(end||''))return{error:'start and end must be YYYY-MM-DD'};
+    if(start>end)return{error:'start must not be after end'};
+    const selectedStart=start<FWD_HISTORY_START?FWD_HISTORY_START:start,selectedEnd=end>today?today:end;
+    if(selectedStart>selectedEnd)return{error:'date range is outside available history starting 2026-08-04'};
+    return{mode:'range',start:selectedStart,end:selectedEnd,hours:null,cutoff:null};
   }
-  const frs=await Promise.all(daysArr.map(ds=>kv.get('fwd_hist_'+ds.replace(/-/g,''))));
-  const acR=await kv.get('appear_count');
-  let ac=null;if(acR){try{ac=JSON.parse(acR)}catch(e){}}
-  const appear={};if(ac&&ac.days){for(const d of Object.keys(ac.days)){for(const ba of Object.keys(ac.days[d])){appear[ba]=(appear[ba]||0)+ac.days[d][ba];}}}
-  const bySym={};
-  daysArr.forEach((ds,idx)=>{
-    const fr=frs[idx];if(!fr)return;
-    try{
-      const p=JSON.parse(fr);
-      for(const c of (p.candidates||[])){
-        const ba=c.base_asset;if(!ba)continue;
-        const fs=c.first_seen||ds,ls=c.last_seen||ds;
-        // 窗口过滤：首次入选或最后入选在窗口内
-        const fsT=Date.parse(fs),lsT=Date.parse(ls);
-        if(fsT<cutoff.getTime()&&lsT<cutoff.getTime())continue;
-        const ex=bySym[ba];
-        if(!ex){bySym[ba]={base_asset:ba,first_seen:fs,last_seen:ls,days:1,best_score:c.forward_score!=null?c.forward_score:null};}
-        else{
-          if(fs<ex.first_seen)ex.first_seen=fs;
-          if(ls>ex.last_seen)ex.last_seen=ls;
-          ex.days++;
-          if(c.forward_score!=null&&(ex.best_score==null||c.forward_score>ex.best_score))ex.best_score=c.forward_score;
-        }
-      }
-    }catch(e){}
+  const hours=Math.max(1,parseInt(params.get('hours')||'24',10)||24);
+  const cutoff=new Date(Date.now()-hours*3600000);
+  const first=new Date(cutoff.getTime()+8*3600000).toISOString().slice(0,10);
+  return{mode:'hours',start:first<FWD_HISTORY_START?FWD_HISTORY_START:first,end:today,hours,cutoff};
+}
+
+function aggregateHistory(records,dates,cutoff,appear){
+  const byAsset={};
+  dates.forEach((date,index)=>{
+    const payload=records[index];
+    for(const candidate of payload?payload.candidates||[]:[]){
+      const asset=candidate.base_asset;if(!asset)continue;
+      const first=candidate.first_seen||date,last=candidate.last_seen||date;
+      if(cutoff&&Date.parse(last)<cutoff.getTime())continue;
+      const current=byAsset[asset]||{base_asset:asset,first_seen:first,last_seen:last,day_set:new Set(),best_score:null};
+      if(first<current.first_seen)current.first_seen=first;
+      if(last>current.last_seen)current.last_seen=last;
+      current.day_set.add(date);
+      if(candidate.forward_score!=null&&(current.best_score==null||candidate.forward_score>current.best_score))current.best_score=candidate.forward_score;
+      byAsset[asset]=current;
+    }
   });
-  const out=Object.values(bySym).map(x=>({...x,appear_count:appear[x.base_asset]||0}));
-  out.sort((a,b)=>(b.last_seen||'').localeCompare(a.last_seen||''));
-  return json({ok:true,hours,cutoff:cutoff.toISOString(),count:out.length,data:out});
+  return Object.values(byAsset).map(row=>({base_asset:row.base_asset,first_seen:row.first_seen,last_seen:row.last_seen,days:row.day_set.size,best_score:row.best_score,appear_count:appear[row.base_asset]||null}));
+}
+
+async function hAH(kv,url){
+  const query=historyRequest(url);
+  if(query.error)return json({ok:false,error:query.error},400);
+  const dates=historyDateRange(query.start,query.end);
+  if(dates.length>FWD_HISTORY_MAX_DAYS)return json({ok:false,error:'date range exceeds 1000 days'},400);
+  const [rawArchives,rawAppear]=await Promise.all([Promise.all(dates.map(date=>kv.get('fwd_hist_'+date.replace(/-/g,'')))),kv.get('appear_count')]);
+  const records=rawArchives.map(raw=>{try{return JSON.parse(raw||'null')}catch(e){return null}});
+  let counts=null;try{counts=JSON.parse(rawAppear||'null')}catch(e){}
+  const appear={},daysWithCounts=counts&&counts.days?counts.days:{};
+  for(const date of dates)for(const asset of Object.keys(daysWithCounts[date]||{}))appear[asset]=(appear[asset]||0)+daysWithCounts[date][asset];
+  const data=aggregateHistory(records,dates,query.cutoff,appear);
+  data.sort((a,b)=>(b.last_seen||'').localeCompare(a.last_seen||''));
+  const archivedDates=dates.filter((date,index)=>!!records[index]);
+  const countDays=dates.filter(date=>Object.prototype.hasOwnProperty.call(daysWithCounts,date));
+  return json({ok:true,mode:query.mode,hours:query.hours,start:query.start,end:query.end,available_start:FWD_HISTORY_START,available_end:dates[dates.length-1],selected_days:dates.length,archive_days:archivedDates.length,appear_count_complete:countDays.length===archivedDates.length,count:data.length,data});
 }
 // 🛤️ 单币历史轨迹：指定币在窗口内每天的候选池状态 + 涨幅榜状态 + 价格快照
 // 参数: symbol=BTC 或 BTCUSDT（大小写不敏感）; days=30（默认，上限 90）
