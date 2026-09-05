@@ -4,11 +4,10 @@
 # 默认运行核心管线；--health 每5分钟检查 stale，异常时自动触发恢复
 # 成功必须同时包含 Coinfilter relay OK 和 Forward relay OK
 # ═══════════════════════════════════════════════════════════
-if [ "${1:-}" = "--health" ]; then
+if [ "${1:-}" = "--health" ] || [ "${1:-}" = "--monitor" ]; then
   health=$(python3 - <<'PY'
 import json
 import urllib.request
-
 try:
     with urllib.request.urlopen("https://app.slinglab.xyz/screener/api/status?watchdog=1", timeout=20) as response:
         payload = json.load(response)
@@ -17,11 +16,14 @@ except Exception:
     print("unknown")
 PY
   )
+  mode="${1#--}"
+  log="/opt/screener/relay.log"
+  if [ "$mode" = "monitor" ]; then log="/opt/screener-monitor/monitor.log"; fi
   if [ "$health" = "healthy" ]; then
-    echo "===== [$(date -u +%H:%M:%S)] WATCHDOG healthy =====" >> /opt/screener/relay.log
+    echo "===== [$(date -u +%H:%M:%S)] $mode healthy =====" >> "$log"
   else
-    echo "===== [$(date -u +%H:%M:%S)] WATCHDOG $health, triggering relay =====" >> /opt/screener/relay.log
-    /opt/screener/run.sh
+    echo "===== [$(date -u +%H:%M:%S)] $mode $health =====" >> "$log"
+    if [ "$mode" = "health" ]; then /opt/screener/run.sh; fi
   fi
 else
   cd /tmp/s 2>/dev/null && timeout 20 git pull --quiet 2>/dev/null && cp -f relay.mjs /opt/screener/relay.mjs 2>/dev/null
