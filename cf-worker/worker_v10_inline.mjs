@@ -2880,7 +2880,7 @@ async function hSC(kv){
   try{cfPayload=JSON.parse(cr||'{}')}catch(e){}
   try{fwPayload=JSON.parse(fr||'{}')}catch(e){}
   const cfUpdated=cfPayload.updated||null,forwardUpdated=fwPayload.updated||null;
-  const sources={market:sourceMeta(marketUpdated,2*3600),coinfilter:sourceMeta(cfUpdated,3*3600),forward:sourceMeta(forwardUpdated,45*60)};
+  const sources={market:sourceMeta(marketUpdated,2*3600),coinfilter:sourceMeta(cfUpdated,45*60),forward:sourceMeta(forwardUpdated,45*60)};
   const stale=Object.values(sources).some(source=>source.stale);
   const appear={};let appearTotal=0;
   if(ar){try{const p=JSON.parse(ar);if(p.days){for(const d of Object.keys(p.days)){for(const ba of Object.keys(p.days[d])){appear[ba]=(appear[ba]||0)+p.days[d][ba];appearTotal+=p.days[d][ba];}}}}catch(e){}}
@@ -2918,5 +2918,13 @@ async function hSC(kv){
   }
   return json({ok:true,updated:forwardUpdated,count:rows.length,env,sources,stale,appear_total:appearTotal,data:rows});
 }
-async function hST(kv){const r=await kv.get('data'),u=await kv.get('last_updated'),c=await kv.get('count'),dr=await kv.get('demon_data'),cr=await kv.get('coinfilter_data'),fw=await kv.get('forward_data');let dc=0,du=null,cc=0,cu=null;if(dr){try{const dp=JSON.parse(dr);dc=dp.count||(Array.isArray(dp)?dp.length:0);du=dp.updated||null}catch(e){}}if(cr){try{const cp=JSON.parse(cr);cc=cp.count||(Array.isArray(cp)?cp.length:0);cu=cp.updated||null}catch(e){}}const ml=await kv.get('mentioned_list');let mentioned=[];if(ml){try{mentioned=JSON.parse(ml)}catch(e){}}return json({project:'筹码筛选',ok:!!r,coins:parseInt(c||'0'),updated:u,demon:{ok:!!dr,coins:parseInt(dc||'0'),updated:du},coinfilter:{ok:!!cr,coins:parseInt(cc||'0'),updated:cu},forward:{ok:!!fw,coins:fw?(()=>{try{return JSON.parse(fw).count||0}catch(e){return 0}})():0,updated:fw?(()=>{try{return JSON.parse(fw).updated||null}catch(e){return null}})():null},mentioned:mentioned})}
+async function hST(kv){
+  const [r,u,c,dr,cr,fw]=await Promise.all([kv.get('data'),kv.get('last_updated'),kv.get('count'),kv.get('demon_data'),kv.get('coinfilter_data'),kv.get('forward_data')]);
+  const parse=(raw)=>{try{return JSON.parse(raw||'{}')}catch(e){return{}}};
+  const age=(updated)=>{const time=Date.parse(updated||'');return Number.isFinite(time)?Math.max(0,Math.round((Date.now()-time)/1000)):null};
+  const meta=(raw,maxAge)=>{const payload=parse(raw),updated=payload.updated||null,seconds=age(updated);return{ok:!!raw,coins:payload.count||(Array.isArray(payload)?payload.length:0),updated,age_seconds:seconds,stale:seconds==null||seconds>maxAge}};
+  const marketAge=age(u);
+  const sources={market:{ok:!!r,coins:parseInt(c||'0'),updated:u,age_seconds:marketAge,stale:marketAge==null||marketAge>2*3600},demon:meta(dr,3*3600),coinfilter:meta(cr,45*60),forward:meta(fw,45*60)};
+  return json({project:'筹码筛选',ok:!!r,coins:parseInt(c||'0'),updated:u,demon:sources.demon,coinfilter:sources.coinfilter,forward:sources.forward,sources,stale:Object.values(sources).some(source=>source.stale)});
+}
 async function hDD(kv){const eps=[{n:'BN',u:'https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT'},{n:'BN spot',u:'https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT'},{n:'BB',u:'https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT'},{n:'OKX',u:'https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT-SWAP'}];const r={};for(const ep of eps){const c=new AbortController,t=setTimeout(()=>c.abort(),1e4);try{const res=await fetch(ep.u,{signal:c.signal});clearTimeout(t);const txt=await res.text().catch(()=>'');r[ep.n]={s:res.status,p:txt.slice(0,100)}}catch(e){clearTimeout(t);r[ep.n]={e:e.message}}}await kv.put('debug_exchange',JSON.stringify(r)).catch(()=>{});return json(r)}
