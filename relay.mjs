@@ -990,11 +990,14 @@ async function main() {
       const okxOiMap = await fetchOkxOi().catch(() => new Map());
       const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
       const heavyDue = isHeavyDue();
-      if (heavyDue && oiMap.size === 0 && payload.binance && payload.binance.length > 0) {
+      if (heavyDue && payload.binance && payload.binance.length > 0) {
         const liveOi = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
-        if (liveOi.size > 0) {
+        const minOi = Math.max(100, Math.ceil(payload.binance.length * 0.7));
+        if (liveOi.size >= minOi) {
           oiMap = liveOi;
           saveMapCache('oi.json', oiMap);
+        } else {
+          console.error(`Heavy OI refresh incomplete: ${liveOi.size}/${payload.binance.length}; using previous cache`);
         }
       }
       if (oiMap.size === 0) {
