@@ -799,22 +799,74 @@ function aggregateMarket(binanceRows, bybitRows, okxRows, okxOiMap) {
 // 重模块节流：demon/coinfilter 每 120 分钟一次（KV 配额 1000 writes/day 约束）
 // 用本地文件记录上次运行时间（relay 每次 cron 是独立进程）
 import fs from 'node:fs';
-const HEAVY_MARKER = '/opt/screener/.heavy_last';
+import path from 'node:path';
+const RELAY_CACHE_DIR = process.env.RELAY_CACHE_DIR || '/opt/screener/cache';
+const HEAVY_MARKER = process.env.RELAY_HEAVY_MARKER || '/opt/screener/.heavy_last';
+
+function loadMapCache(name, maxAgeMs) {
+  let result = new Map();
+  try {
+    const file = path.join(RELAY_CACHE_DIR, name);
+    const stat = fs.statSync(file);
+    const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (Date.now() - stat.mtimeMs <= maxAgeMs && Array.isArray(entries)) result = new Map(entries);
+  } catch (e) { /* cache miss */ }
+  return result;
+}
+function isMapCacheFresh(name, maxAgeMs) {
+  try {
+    const file = path.join(RELAY_CACHE_DIR, name);
+    return Date.now() - fs.statSync(file).mtimeMs <= maxAgeMs;
+  } catch (e) {
+    return false;
+  }
+}
+
+function saveMapCache(name, values) {
+  try {
+    fs.mkdirSync(RELAY_CACHE_DIR, { recursive: true });
+    const file = path.join(RELAY_CACHE_DIR, name);
+    const temp = file + '.tmp';
+    fs.writeFileSync(temp, JSON.stringify(Array.from(values.entries())));
+    fs.renameSync(temp, file);
+  } catch (e) { console.error(`Cache ${name} write failed:`, e.message); }
+}
+
+function mergeMaps(base, update) {
+  const merged = new Map(base);
+  for (const [key, value] of update) merged.set(key, value);
+  return merged;
+}
+
+async function fetchWorkerOiCache() {
+  const result = new Map();
+  try {
+    const url = COINFILTER_URL.replace('/relay-coinfilter', '/coinfilter');
+    const body = await fetchWithTimeout(url);
+    for (const row of body.data || []) {
+      if (row.symbol && Number.isFinite(row.oi_contracts)) result.set(row.symbol, row.oi_contracts);
+    }
+  } catch (e) { console.error('Worker OI cache unavailable:', e.message); }
+  return result;
+}
+
 async function isHeavyDue() {
+  let due = true;
   try {
     const last = parseInt(fs.readFileSync(HEAVY_MARKER, 'utf-8'), 10);
-    if (Date.now() - last < 120 * 60 * 1000) return false;
+    if (Date.now() - last < 120 * 60 * 1000) due = false;
   } catch (e) { /* 无标记 → 首次运行 */ }
-  try { fs.writeFileSync(HEAVY_MARKER, String(Date.now())); } catch (e) {}
-  return true;
+  if (due) {
+    try { fs.writeFileSync(HEAVY_MARKER, String(Date.now())); } catch (e) {}
+  }
+  return due;
 }
 
 async function main() {
   // 每 15 分钟 cron 触发一次，内部循环 3 轮（间隔 5 分钟）：
   //   每轮：抓 tickers → 推 relay-tickers（涨幅榜归档 5 分钟更新）
-  //   第一轮额外：demon/coinfilter/forward（重计算，保持 15 分钟频率，避免 Binance 限流）
-  const ROUNDS = 3;
-  const ROUND_INTERVAL_MS = 5 * 60 * 1000;
+  const ROUNDS = Math.max(1, parseInt(process.env.RELAY_ROUNDS || '3', 10) || 3);
+  const ROUND_INTERVAL_MS = Math.max(0, parseInt(process.env.RELAY_ROUND_INTERVAL_MS || String(5 * 60 * 1000), 10) || 0);
   for (let round = 0; round < ROUNDS; round++) {
     if (round > 0) {
       console.log(`Round ${round + 1}/${ROUNDS}: waiting ${ROUND_INTERVAL_MS / 60000}min...`);
@@ -864,39 +916,39 @@ async function main() {
       console.error('Tickers relay failed after retries:', result ? JSON.stringify(result) : 'no response');
     }
 
-    // 重计算模块节流：demon/coinfilter 每 30 分钟（KV 配额 1000 writes/day 约束），
-    // forward 每 15 分钟（候选池归档核心）；tickers 每轮 5 分钟。
-    // forward 不得依赖 heavyDue 分支里的块级变量，否则节流轮次会在参数求值时崩溃。
-    let agg = null;
-    let oiMap = new Map();
+    // 重计算模块节流：demon/coinfilter 每 120 分钟（KV 配额 1000 writes/day 约束），
+    // forward 每 15 分钟刷新行情，但复用磁盘 OI/K 线缓存，避免逐币请求触发 Binance 封禁。
+    let oiMap = loadMapCache('oi.json', 3 * 60 * 60 * 1000);
     if (round === 0) {
+      const okxOiMap = await fetchOkxOi().catch(() => new Map());
+      const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
       const heavyDue = await isHeavyDue();
       if (heavyDue) {
-        // 全市场聚合：OI = Binance(一次全量) + Bybit(ticker自带) + OKX(全量接口)
-        const okxOiMap = await fetchOkxOi().catch(() => new Map());
-        agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
-        // Binance OI 只抓一次，三个模块复用（避免 3×679 请求触发限流卡死）
-        if (payload.binance && payload.binance.length > 0) {
-          oiMap = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
+        if (oiMap.size === 0 && payload.binance && payload.binance.length > 0) {
+          const liveOi = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
+          if (liveOi.size > 0) {
+            oiMap = liveOi;
+            saveMapCache('oi.json', oiMap);
+          }
         }
-        console.log(`Main: fetched OI=${oiMap.size} (shared across demon/coinfilter/forward)`);
-
-        // 妖币扫描数据（基于本次 Binance ticker + 全市场聚合）
-        if (payload.binance) {
+        if (oiMap.size === 0) {
+          oiMap = await fetchWorkerOiCache();
+          if (oiMap.size > 0) saveMapCache('oi.json', oiMap);
+        }
+        console.log(`Main: available OI=${oiMap.size} (shared across demon/coinfilter/forward)`);
+        if (payload.binance && oiMap.size > 0) {
           await relayDemon(payload.binance, agg, oiMap).catch(e => console.error('Demon relay failed:', e.message));
-        }
-
-        // 小币筛选数据（基于本次 Binance ticker）
-        if (payload.binance) {
           await relayCoinfilter(payload.binance, oiMap, null, null, null, agg).catch(e => console.error('Coinfilter relay failed:', e.message));
         }
       } else {
-        console.log('Heavy modules (demon/coinfilter) throttled: last run < 30min ago');
+        console.log('Heavy modules (demon/coinfilter) throttled: last run < 120min ago');
       }
 
-      // 前导筛选数据（基于本次 Binance ticker）— 每 15 分钟。
-      // heavyDue=false 时 relayForward 自行补抓 OI，不依赖 demon/coinfilter 节流。
       if (payload.binance) {
+        if (oiMap.size === 0) {
+          oiMap = await fetchWorkerOiCache();
+          if (oiMap.size > 0) saveMapCache('oi.json', oiMap);
+        }
         await relayForward(payload.binance, process.env.DEBUG, agg, oiMap).catch(e => console.error('Forward relay failed:', e.message));
       }
     }
@@ -1056,33 +1108,51 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
 
   const syms = candidates.map(r => r.symbol);
   let oiMap = sharedOiMap;
-  if (!oiMap || oiMap.size === 0) {
-    oiMap = await fetchOpenInterest(syms);
-  }
+  if (!oiMap || oiMap.size === 0) oiMap = await fetchWorkerOiCache();
   console.log(`Forward: using OI=${oiMap.size}`);
+  if (oiMap.size === 0) {
+    console.error('Forward: no OI available; preserving previous snapshot');
+    return;
+  }
 
-  // 只对 OI 2M-80M 的候选算 OI 历史分位（全量 530 币权重10×530=5300超限）
-  const oiRangeSyms = syms.filter(sym => {
-    const oi = oiMap.get(sym);
-    const r = sorted.find(x => x.symbol === sym);
-    if (oi == null || !r) return false;
-    const oiValue = oi * r.price;
-    return oiValue >= 2000000 && oiValue <= 80000000;
-  });
-  const klineMap = await fetchKlineHistory(syms);
-  const oiHistMap = await fetchOiHistory(oiRangeSyms);
+  // 日线是日级结构数据：缓存可服务 6 小时；到期后只做一次全量刷新。
+  const cacheFresh = isMapCacheFresh('klines.json', 6 * 60 * 60 * 1000);
+  const cachedKlines = loadMapCache('klines.json', cacheFresh ? 6 * 60 * 60 * 1000 : Number.MAX_SAFE_INTEGER);
+  let klineMap = cachedKlines;
+  if (!cacheFresh || cachedKlines.size === 0) {
+    const liveKlines = await fetchKlineHistory(syms);
+    if (liveKlines.size > 0) {
+      klineMap = mergeMaps(cachedKlines, liveKlines);
+      saveMapCache('klines.json', klineMap);
+    }
+  }
+  const covered = syms.filter(sym => klineMap.has(sym)).length;
+  const klineCoverage = syms.length > 0 ? covered / syms.length : 0;
+  if (klineCoverage < 0.5) {
+    console.error(`Forward: kline coverage ${(klineCoverage * 100).toFixed(1)}% < 50%; preserving previous snapshot`);
+    return;
+  }
+  const oiHistMap = new Map();
+
   const listingMap = await fetchListingDates();
-  // dotyyds1234 维度：资金费（premiumIndex 批量 1 请求，权重低）
   const fundingMap = await fetchFundingRates(syms);
-  // BTC 方向提示（仅展示，不参与评分/筛选）
-  const btcEnv = await fetchBtcEnv();
-  console.log(`Forward: klines=${klineMap.size} oiHist=${oiHistMap.size} funding=${fundingMap.size}`);
-
+  const btcKlines = klineMap.get('BTCUSDT') || [];
+  let btcEnv = { up: null, close: null, sma20: null };
+  if (btcKlines.length >= 20) {
+    const closes = btcKlines.map(row => parseFloat(row[4]));
+    const sma20 = closes.slice(-20).reduce((sum, value) => sum + value, 0) / 20;
+    const close = closes[closes.length - 1];
+    btcEnv = { up: close > sma20, close, sma20 };
+  }
+  if (btcEnv.up == null) {
+    console.error('Forward: cached BTC environment unavailable; preserving previous snapshot');
+    return;
+  }
+  console.log(`Forward: klines=${klineMap.size} funding=${fundingMap.size}`);
   const payload = [];
   for (const r of sorted) {
     const oi = oiMap.get(r.symbol);
     if (oi == null) continue;
-    // 全市场聚合：OI = Binance + Bybit + OKX；交易量 = 三所之和
     const aggOi = agg && agg.oi ? (agg.oi.get(r.symbol) || 0) : 0;
     const aggVol = agg && agg.vol ? (agg.vol.get(r.symbol) || 0) : 0;
     const oiValue = oi * r.price + aggOi;
