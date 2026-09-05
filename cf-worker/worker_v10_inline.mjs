@@ -2785,7 +2785,7 @@ function historyRequest(url){
   return{mode:'hours',start:first<FWD_HISTORY_START?FWD_HISTORY_START:first,end:today,hours,cutoff};
 }
 
-function aggregateHistory(records,dates,cutoff,appear){
+function aggregateHistory(records,dates,cutoff,dayCounts,hourMode){
   const byAsset={};
   dates.forEach((date,index)=>{
     const payload=records[index];
@@ -2801,7 +2801,11 @@ function aggregateHistory(records,dates,cutoff,appear){
       byAsset[asset]=current;
     }
   });
-  return Object.values(byAsset).map(row=>({base_asset:row.base_asset,first_seen:row.first_seen,last_seen:row.last_seen,days:row.day_set.size,best_score:row.best_score,appear_count:appear[row.base_asset]||null}));
+  return Object.values(byAsset).map(row=>{
+    const complete=!hourMode&&Array.from(row.day_set).every(date=>Object.prototype.hasOwnProperty.call(dayCounts,date));
+    let count=0;if(complete)for(const date of row.day_set)count+=(dayCounts[date]&&dayCounts[date][row.base_asset])||0;
+    return{base_asset:row.base_asset,first_seen:row.first_seen,last_seen:row.last_seen,days:row.day_set.size,best_score:row.best_score,appear_count:complete?count:null};
+  });
 }
 
 async function hAH(kv,url){
@@ -2812,13 +2816,13 @@ async function hAH(kv,url){
   const [rawArchives,rawAppear]=await Promise.all([Promise.all(dates.map(date=>kv.get('fwd_hist_'+date.replace(/-/g,'')))),kv.get('appear_count')]);
   const records=rawArchives.map(raw=>{try{return JSON.parse(raw||'null')}catch(e){return null}});
   let counts=null;try{counts=JSON.parse(rawAppear||'null')}catch(e){}
-  const appear={},daysWithCounts=counts&&counts.days?counts.days:{};
-  for(const date of dates)for(const asset of Object.keys(daysWithCounts[date]||{}))appear[asset]=(appear[asset]||0)+daysWithCounts[date][asset];
-  const data=aggregateHistory(records,dates,query.cutoff,appear);
+  const dayCounts=counts&&counts.days?counts.days:{};
+  const data=aggregateHistory(records,dates,query.cutoff,dayCounts,query.mode==='hours');
   data.sort((a,b)=>(b.last_seen||'').localeCompare(a.last_seen||''));
   const archivedDates=dates.filter((date,index)=>!!records[index]);
-  const countDays=dates.filter(date=>Object.prototype.hasOwnProperty.call(daysWithCounts,date));
-  return json({ok:true,mode:query.mode,hours:query.hours,start:query.start,end:query.end,available_start:FWD_HISTORY_START,available_end:dates[dates.length-1],selected_days:dates.length,archive_days:archivedDates.length,appear_count_complete:countDays.length===archivedDates.length,count:data.length,data});
+  const countDays=dates.filter(date=>Object.prototype.hasOwnProperty.call(dayCounts,date));
+  const complete=query.mode!=='hours'&&countDays.length===archivedDates.length;
+  return json({ok:true,mode:query.mode,hours:query.hours,start:query.start,end:query.end,available_start:FWD_HISTORY_START,available_end:dates[dates.length-1],selected_days:dates.length,archive_days:archivedDates.length,appear_count_complete:complete,count:data.length,data});
 }
 // 🛤️ 单币历史轨迹：指定币在窗口内每天的候选池状态 + 涨幅榜状态 + 价格快照
 // 参数: symbol=BTC 或 BTCUSDT（大小写不敏感）; days=30（默认，上限 90）
