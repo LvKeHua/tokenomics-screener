@@ -1881,55 +1881,89 @@ function renderCoinfilter(container) {
 // ═══════════════════════════════════════════════════════════
 var scData = [], scLoaded = false, scTag = '', scSort = 'forward_score', scAsc = false, scAppearTotal = 0;
 var scEnv = null, scSources = null, scUpdated = null, scStale = true;
-// 历史出现面板
-var scAhHours = 24, scAhCache = {};
-function scAhSet(h) { scAhHours = h; scAhLoad(); }
+// 历史出现面板：快捷窗口 + 任意北京日期范围 + 全部归档。
+var scAhMode = 'hours', scAhHours = 24, scAhStart = '2026-08-04', scAhEnd = scBjToday(), scAhCache = {};
+
+function scBjToday() {
+  return new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+}
+
+function scAhPreset(mode, value) {
+  scAhMode = mode;
+  if (mode === 'hours') scAhHours = value;
+  renderScreener();
+  scAhLoad();
+}
+
+function scAhCustom() {
+  var start = document.getElementById('sc-ah-start');
+  var end = document.getElementById('sc-ah-end');
+  if (!start || !end || !start.value || !end.value) return;
+  if (start.value > end.value) {
+    document.getElementById('sc-ah-panel').innerHTML = '<div class="empty-msg" style="padding:14px">开始日期不能晚于结束日期</div>';
+  } else {
+    scAhStart = start.value;
+    scAhEnd = end.value;
+    scAhMode = 'range';
+    renderScreener();
+    scAhLoad();
+  }
+}
+function scAhRequest() {
+  if (scAhMode === 'all') return { key: 'all', url: BASE + '/api/appear-history?all=1' };
+  if (scAhMode === 'range') return { key: scAhStart + ':' + scAhEnd, url: BASE + '/api/appear-history?start=' + encodeURIComponent(scAhStart) + '&end=' + encodeURIComponent(scAhEnd) };
+  return { key: 'h:' + scAhHours, url: BASE + '/api/appear-history?hours=' + scAhHours };
+}
+
 function scAhLoad() {
   var panel = document.getElementById('sc-ah-panel');
   var status = document.getElementById('sc-ah-status');
   if (!panel) return;
-  if (scAhCache[scAhHours]) { scAhRender(scAhCache[scAhHours]); return; }
-  panel.innerHTML = '<div class="empty-msg" style="padding:14px">🕘 正在查询 ' + scAhHours + ' 小时内入选过的币...</div>';
+  var request = scAhRequest();
+  if (scAhCache[request.key]) { scAhRender(scAhCache[request.key]); return; }
+  var controller = new AbortController();
+  var timer = setTimeout(function () { controller.abort(); }, 20000);
+  panel.innerHTML = '<div class="empty-msg" style="padding:14px">正在查询历史候选归档...</div>';
   if (status) status.innerHTML = '';
-  fetch(BASE + '/api/appear-history?hours=' + scAhHours).then(function (r) { return r.json(); }).then(function (d) {
-    if (d.error) throw new Error(d.error);
-    scAhCache[scAhHours] = d;
-    scAhRender(d);
-  }).catch(function (err) {
-    panel.innerHTML = '<div class="empty-msg" style="padding:14px">查询失败: ' + e(err.message) + ' <button class="btn btn-sm" onclick="scAhLoad()">重试</button></div>';
-  });
+  fetch(request.url + (request.url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store', signal: controller.signal }).then(function (response) {
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return response.json();
+  }).then(function (data) {
+    if (data.error) throw new Error(data.error);
+    scAhCache[request.key] = data;
+    scAhStart = data.start || scAhStart;
+    scAhEnd = data.end || scAhEnd;
+    scAhRender(data);
+  }).catch(function (error) {
+    var message = error.name === 'AbortError' ? '请求超时（20秒）' : error.message;
+    panel.innerHTML = '<div class="empty-msg" style="padding:14px">查询失败: ' + e(message) + ' <button class="btn btn-sm" onclick="scAhLoad()">重试</button></div>';
+  }).finally(function () { clearTimeout(timer); });
 }
-function scAhRender(d) {
+
+function scAhRender(data) {
   var panel = document.getElementById('sc-ah-panel');
   var status = document.getElementById('sc-ah-status');
   if (!panel) return;
-  if (status) status.innerHTML = '共 ' + d.count + ' 个币';
-  var rows = d.data || [];
+  var range = (data.start || '—') + ' 至 ' + (data.end || '—');
+  if (status) status.innerHTML = '共 ' + data.count + ' 个币 · ' + range + ' · 有归档 ' + (data.archive_days || 0) + '/' + (data.selected_days || 0) + ' 天';
+  var rows = data.data || [];
   if (!rows.length) { panel.innerHTML = '<div class="empty-msg" style="padding:14px">该时间范围内没有币入选过候选池</div>'; return; }
-  var H = '<div class="table-wrap" style="margin-top:6px"><table class="tbl fwd-tbl"><thead><tr>';
-  H += '<th>币种</th><th>首次入选</th><th>最后入选</th><th>入选天数</th><th>出现次数</th><th>最高评分</th><th></th>';
-  H += '</tr></thead><tbody>';
-  rows.forEach(function (r) {
-    var fs = r.first_seen, ls = r.last_seen;
-    function fmt(iso) {
-      if (!iso) return '—';
-      var t = new Date(iso);
-      if (isNaN(t.getTime())) return iso;
-      var bj = new Date(t.getTime() + 8 * 3600 * 1000);
-      return ('0' + (bj.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + bj.getUTCDate()).slice(-2) + ' ' + ('0' + bj.getUTCHours()).slice(-2) + ':' + ('0' + bj.getUTCMinutes()).slice(-2);
-    }
-    H += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">';
-    H += '<td class="mono"><b>' + e(r.base_asset) + '</b></td>';
-    H += '<td class="mono" style="font-size:11px;color:#94a3b8">' + fmt(fs) + '</td>';
-    H += '<td class="mono" style="font-size:11px;color:#34d399">' + fmt(ls) + '</td>';
-    H += '<td class="mono">' + r.days + '天</td>';
-    H += '<td class="mono" style="' + (r.appear_count >= 10 ? 'color:#fbbf24;font-weight:800' : (r.appear_count >= 5 ? 'color:#f59e0b;font-weight:700' : 'color:#94a3b8')) + '">' + (r.appear_count > 0 ? r.appear_count + '次' : '—') + '</td>';
-    H += '<td class="mono score">' + (r.best_score != null ? r.best_score : '—') + '</td>';
-    H += '<td><button class="btn btn-sm" onclick="evJump(\'' + r.base_asset + '\')">查看</button></td>';
-    H += '</tr>';
+  function fmt(iso) {
+    if (!iso) return '—';
+    var time = new Date(iso);
+    if (isNaN(time.getTime())) return iso;
+    var bj = new Date(time.getTime() + 8 * 3600000);
+    return bj.getUTCFullYear() + '-' + ('0' + (bj.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + bj.getUTCDate()).slice(-2) + ' ' + ('0' + bj.getUTCHours()).slice(-2) + ':' + ('0' + bj.getUTCMinutes()).slice(-2);
+  }
+  var html = '<div class="table-wrap" style="margin-top:6px"><table class="tbl fwd-tbl"><thead><tr><th>币种</th><th>首次入选</th><th>最后入选</th><th>入选天数</th><th>出现次数</th><th>最高评分</th><th></th></tr></thead><tbody>';
+  rows.forEach(function (row) {
+    var count = row.appear_count == null ? '—' : row.appear_count + '次';
+    var countStyle = row.appear_count >= 10 ? 'color:#fbbf24;font-weight:800' : (row.appear_count >= 5 ? 'color:#f59e0b;font-weight:700' : 'color:#94a3b8');
+    html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04)"><td class="mono"><b>' + e(row.base_asset) + '</b></td><td class="mono" style="font-size:11px;color:#94a3b8">' + fmt(row.first_seen) + '</td><td class="mono" style="font-size:11px;color:#34d399">' + fmt(row.last_seen) + '</td><td class="mono">' + row.days + '天</td><td class="mono" style="' + countStyle + '">' + count + '</td><td class="mono score">' + (row.best_score != null ? row.best_score : '—') + '</td><td><button class="btn btn-sm" onclick="evJump(\'' + row.base_asset + '\')">查看</button></td></tr>';
   });
-  H += '</tbody></table></div>';
-  panel.innerHTML = H;
+  html += '</tbody></table></div>';
+  if (!data.appear_count_complete) html += '<div class="dim" style="font-size:11px;margin-top:6px">出现次数只在有逐次计数归档的日期精确；更早日期显示“—”。首次/最后入选、入选天数和最高评分来自每日候选归档。</div>';
+  panel.innerHTML = html;
 }
 // OI 范围自定义（客户端过滤，默认不设限 = 全市场，逻辑不变）
 var scOiMin = null, scOiMax = null;
@@ -2370,16 +2404,19 @@ function renderScreener() {
   H += '<span class="dim" id="sc-oi-status">' + (scOiMin != null || scOiMax != null ? '🔍 已过滤 OI ' + (scOiMin != null ? (scOiMin/1e6) : '0') + 'M ~ ' + (scOiMax != null ? (scOiMax/1e6) : '∞') + 'M' : '未过滤（全市场）') + '</span>';
   H += '</div>';
   H += '<div class="fwd-stats">🧭候选 ' + nAcc + ' · ⛔回避 ' + nAvoid + ' · 🔔告警 ' + nAlert + ' · ⚠️薄盘口 ' + nThin + (scAppearTotal > 0 ? ' · 📊 7天出现 ' + scAppearTotal + ' 次' : '') + '</div>';
-  H += '<div class="fwd-bar" style="margin-top:10px;flex-wrap:wrap;gap:6px;align-items:center">';
-  H += '<span class="dim" style="font-weight:700;color:var(--accent,#60a5fa)">🕘 历史出现</span>';
-  H += '<span class="dim">时间范围:</span>';
-  [1,4,6,12,24,48,72,96,120].forEach(function (h) {
-    H += '<button class="btn btn-sm' + (scAhHours === h ? ' btn-active' : '') + '" onclick="scAhSet(' + h + ')">' + (h < 24 ? h + 'h' : (h % 24 === 0 ? (h / 24) + 'd' : h + 'h')) + '</button>';
+  H += '<div style="margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);display:flex;flex-direction:column;gap:9px">';
+  H += '<div class="fwd-bar" style="margin:0;flex-wrap:wrap;gap:6px;align-items:center">';
+  H += '<span class="dim" style="font-weight:700;color:var(--accent,#60a5fa)">🕘 历史出现</span><span class="dim">快捷范围:</span>';
+  [[1,'1h'],[4,'4h'],[12,'12h'],[24,'1d'],[168,'7d'],[720,'30d']].forEach(function (item) {
+    H += '<button class="btn btn-sm' + (scAhMode === 'hours' && scAhHours === item[0] ? ' btn-active' : '') + '" onclick="scAhPreset(\'hours\',' + item[0] + ')">' + item[1] + '</button>';
   });
-  H += '<button class="btn btn-sm" onclick="scAhLoad()" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;font-weight:700">查询</button>';
-  H += '<span class="dim" id="sc-ah-status"></span>';
-  H += '</div>';
-  H += '<div id="sc-ah-panel"></div>';
+  H += '<button class="btn btn-sm' + (scAhMode === 'all' ? ' btn-active' : '') + '" onclick="scAhPreset(\'all\',0)">全部历史</button>';
+  H += '<span class="dim" id="sc-ah-status"></span></div>';
+  H += '<div class="fwd-bar" style="margin:0;flex-wrap:wrap;gap:6px;align-items:center"><span class="dim">自定义北京日期:</span>';
+  H += '<input id="sc-ah-start" type="date" min="2026-08-04" max="' + scBjToday() + '" value="' + e(scAhStart) + '" style="padding:5px 7px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text)">';
+  H += '<span class="dim">至</span><input id="sc-ah-end" type="date" min="2026-08-04" max="' + scBjToday() + '" value="' + e(scAhEnd) + '" style="padding:5px 7px;background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;color:var(--text)">';
+  H += '<button class="btn btn-sm' + (scAhMode === 'range' ? ' btn-active' : '') + '" onclick="scAhCustom()">查询日期范围</button>';
+  H += '<span class="dim">可用历史从 2026-08-04 开始</span></div><div id="sc-ah-panel"></div></div>';
 
   if (!rows.length) {
     H += '<div class="empty-msg">没有符合条件的币。</div>';
