@@ -274,13 +274,41 @@ async function fetchOkxOi() {
 
 // -- Main --------------------------------------------------------------------
 
+// Binance IP 封禁冷却：418/-1003 "banned until <ts>" 时写入标记，
+// 冷却期内跳过所有 Binance 请求，避免每次尝试刷新封禁（死循环）
+const BINANCE_BAN_FILE = process.env.BINANCE_BAN_FILE || '/opt/screener/.binance_ban';
+
+function readBinanceBan() {
+  try {
+    const ts = parseInt(fs.readFileSync(BINANCE_BAN_FILE, 'utf-8'), 10);
+    if (Number.isFinite(ts) && ts > Date.now()) return ts;
+  } catch (e) { /* no ban file */ }
+  return null;
+}
+
+function writeBinanceBan(untilMs) {
+  try { fs.writeFileSync(BINANCE_BAN_FILE, String(untilMs)); } catch (e) {}
+}
+
 // ─── 妖币扫描: Binance OI ──────────────────────────────────
 async function fetchWithTimeout(url, opts = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const res = await proxiedFetch(url, { ...opts, signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      // Binance 418: IP 封禁（-1003 banned until <ts>），写入冷却标记
+      if (res.status === 418) {
+        const text = await res.text().catch(() => '');
+        const m = text.match(/banned until (\d+)/);
+        if (m) {
+          const until = parseInt(m[1], 10);
+          writeBinanceBan(until);
+          console.error(`Binance: IP banned until ${new Date(until).toISOString()}; cooling down, skipping Binance requests`);
+        }
+      }
+      throw new Error(`HTTP ${res.status}`);
+    }
     return await res.json();
   } finally { clearTimeout(timer); }
 }
@@ -294,6 +322,12 @@ const BINANCE_FAPI_HOSTS = [
 let binanceHostIdx = 0; // 记住上次成功域名，下次优先
 
 async function fetchBinanceApi(path, opts = {}) {
+  // 封禁冷却期内直接跳过，不发起任何 Binance 请求（避免刷新封禁）
+  const banUntil = readBinanceBan();
+  if (banUntil) {
+    const mins = Math.ceil((banUntil - Date.now()) / 60000);
+    throw new Error(`Binance IP banned, cooling down ${mins}min`);
+  }
   let lastErr = null;
   for (let i = 0; i < BINANCE_FAPI_HOSTS.length; i++) {
     const idx = (binanceHostIdx + i) % BINANCE_FAPI_HOSTS.length;
@@ -928,6 +962,13 @@ async function main() {
   //   每轮：抓 tickers → 推 relay-tickers（涨幅榜归档 5 分钟更新）
   const ROUNDS = Math.max(1, parseInt(process.env.RELAY_ROUNDS || '3', 10) || 3);
   const ROUND_INTERVAL_MS = Math.max(0, parseInt(process.env.RELAY_ROUND_INTERVAL_MS || String(5 * 60 * 1000), 10) || 0);
+  // Binance 封禁冷却：直接退出，不推 OKX-only 数据污染 exchange_proxy，也不刷新封禁
+  const banUntil = readBinanceBan();
+  if (banUntil) {
+    const mins = Math.ceil((banUntil - Date.now()) / 60000);
+    console.log(`Binance IP banned until ${new Date(banUntil).toISOString()} (${mins}min left); skipping relay rounds`);
+    return;
+  }
   for (let round = 0; round < ROUNDS; round++) {
     if (round > 0) {
       console.log(`Round ${round + 1}/${ROUNDS}: waiting ${ROUND_INTERVAL_MS / 60000}min...`);
