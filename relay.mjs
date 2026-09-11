@@ -163,6 +163,11 @@ async function fetchBinance() {
       if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 5000));
     }
   }
+  // 主 ticker 抓取确认 IP 封禁（418 + banned until）才写冷却
+  if (lastErr && lastErr.bannedUntil) {
+    writeBinanceBan(lastErr.bannedUntil);
+    console.error(`Binance: IP banned until ${new Date(lastErr.bannedUntil).toISOString()}; cooling down, skipping Binance requests`);
+  }
   throw lastErr || new Error('Binance fetch failed');
 }
 
@@ -297,17 +302,15 @@ async function fetchWithTimeout(url, opts = {}) {
   try {
     const res = await proxiedFetch(url, { ...opts, signal: controller.signal });
     if (!res.ok) {
-      // Binance 418: IP 封禁（-1003 banned until <ts>），写入冷却标记
+      // Binance 418: 把 banned until 附加到 error，由主 ticker 抓取决定是否写冷却
+      // （OI/辅助请求的 418 是权重限流，不应触发 IP 冷却误判）
+      const err = new Error(`HTTP ${res.status}`);
       if (res.status === 418) {
         const text = await res.text().catch(() => '');
         const m = text.match(/banned until (\d+)/);
-        if (m) {
-          const until = parseInt(m[1], 10);
-          writeBinanceBan(until);
-          console.error(`Binance: IP banned until ${new Date(until).toISOString()}; cooling down, skipping Binance requests`);
-        }
+        if (m) err.bannedUntil = parseInt(m[1], 10);
       }
-      throw new Error(`HTTP ${res.status}`);
+      throw err;
     }
     return await res.json();
   } finally { clearTimeout(timer); }
