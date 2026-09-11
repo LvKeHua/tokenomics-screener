@@ -129,7 +129,7 @@ async function fetchBinance() {
   let lastErr = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const data = await fetchBinanceApi('/fapi/v1/ticker/24hr', { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' } });
+      const data = await fetchBinanceApi('/fapi/v1/ticker/24hr', { allowDuringBan: true, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' } });
       const rows = [];
       for (const t of data) {
         if (!t.symbol.endsWith('USDT')) continue;
@@ -330,11 +330,14 @@ const BINANCE_FAPI_HOSTS = [
 let binanceHostIdx = 0; // 记住上次成功域名，下次优先
 
 async function fetchBinanceApi(path, opts = {}) {
-  // 封禁冷却期内直接跳过，不发起任何 Binance 请求（避免刷新封禁）
-  const banUntil = readBinanceBan();
-  if (banUntil) {
-    const mins = Math.ceil((banUntil - Date.now()) / 60000);
-    throw new Error(`Binance IP banned, cooling down ${mins}min`);
+  // 封禁冷却期内跳过批量请求（OI/depth/funding），但主 ticker 探测（allowDuringBan）照常发起，
+  // 成功即清除冷却自动恢复，失败即刷新冷却——避免冷却文件造成长期空转
+  if (!opts.allowDuringBan) {
+    const banUntil = readBinanceBan();
+    if (banUntil) {
+      const mins = Math.ceil((banUntil - Date.now()) / 60000);
+      throw new Error(`Binance IP banned, cooling down ${mins}min`);
+    }
   }
   let lastErr = null;
   for (let i = 0; i < BINANCE_FAPI_HOSTS.length; i++) {
@@ -973,13 +976,6 @@ async function main() {
   //   每轮：抓 tickers → 推 relay-tickers（涨幅榜归档 5 分钟更新）
   const ROUNDS = Math.max(1, parseInt(process.env.RELAY_ROUNDS || '3', 10) || 3);
   const ROUND_INTERVAL_MS = Math.max(0, parseInt(process.env.RELAY_ROUND_INTERVAL_MS || String(5 * 60 * 1000), 10) || 0);
-  // Binance 封禁冷却：直接退出，不推 OKX-only 数据污染 exchange_proxy，也不刷新封禁
-  const banUntil = readBinanceBan();
-  if (banUntil) {
-    const mins = Math.ceil((banUntil - Date.now()) / 60000);
-    console.log(`Binance IP banned until ${new Date(banUntil).toISOString()} (${mins}min left); skipping relay rounds`);
-    return;
-  }
   for (let round = 0; round < ROUNDS; round++) {
     if (round > 0) {
       console.log(`Round ${round + 1}/${ROUNDS}: waiting ${ROUND_INTERVAL_MS / 60000}min...`);
@@ -1019,6 +1015,13 @@ async function main() {
     if (sourceCount === 0) {
       console.error('FATAL: All exchange fetches failed. Nothing to relay.');
       process.exit(1);
+    }
+    // 冷却期内 Binance 不可用：不推 OKX-only 数据污染 exchange_proxy，等主 ticker 探测恢复
+    if (!payload.binance) {
+      const banUntil = readBinanceBan();
+      const mins = banUntil ? Math.ceil((banUntil - Date.now()) / 60000) : 0;
+      console.log(`Binance unavailable (cooldown ${mins}min left); skipping relay rounds to avoid OKX-only pollution`);
+      return;
     }
 
     if (!AUTH_KEY) {
