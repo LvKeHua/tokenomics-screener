@@ -370,6 +370,8 @@ async function fetchOpenInterest(symbols) {
       } catch (e) {
         if (process.env.DEBUG) console.log(`OI ${sym}: FAILED ${e.message}`);
       }
+      // 节流：5 并发 × 200ms ≈ 25 req/s ≈ 1500 权重/分钟（权重=1），远离限流线
+      await new Promise(r => setTimeout(r, 200));
     }
   }
   await Promise.all(Array.from({ length: Math.min(5, symbols.length) }, worker));
