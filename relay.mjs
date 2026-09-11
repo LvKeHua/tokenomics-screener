@@ -324,7 +324,9 @@ async function fetchWithTimeout(url, opts = {}) {
 // ── Binance fAPI 域名轮询：官方备用域名 fapi1-5.binance.com 数据一致，
 //    任一域名失败自动换下一个，规避 Evoxt IP 对单域名间歇性限流/失败 ──
 const BINANCE_FAPI_HOSTS = [
-  'fapi.binance.com', 'fapi1.binance.com', 'fapi2.binance.com',
+  // www.binance.com/fapi web 端点：数据中心 IP 被 fapi API 封禁时仍可达（已验证）
+  // 且权重限流更宽松，减少 418 触发
+  'www.binance.com', 'fapi.binance.com', 'fapi1.binance.com', 'fapi2.binance.com',
   'fapi3.binance.com', 'fapi4.binance.com', 'fapi5.binance.com',
 ];
 let binanceHostIdx = 0; // 记住上次成功域名，下次优先
@@ -345,7 +347,9 @@ async function fetchBinanceApi(path, opts = {}) {
     const host = BINANCE_FAPI_HOSTS[idx];
     const url = `https://${host}${path}`;
     try {
-      const d = await fetchWithTimeout(url, opts);
+      // www.binance.com/fapi web 端点要求浏览器 UA
+      const fopts = { ...opts, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', ...(opts.headers || {}) } };
+      const d = await fetchWithTimeout(url, fopts);
       binanceHostIdx = idx; // 记住成功域名
       if (process.env.DEBUG && i > 0) console.log(`Binance: ${host} OK (fallback ${i})`);
       return d;
