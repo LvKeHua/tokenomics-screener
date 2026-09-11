@@ -156,6 +156,7 @@ async function fetchBinance() {
       }
       saveArrayCache('binance.json', rows);
       if (process.env.DEBUG && attempt > 1) console.log(`Binance: retry #${attempt-1} OK`);
+      clearBinanceBan(); // 主 ticker 成功 = IP 未被封，清除可能过期的冷却标记
       return rows;
     } catch (e) {
       lastErr = e;
@@ -295,6 +296,10 @@ function writeBinanceBan(untilMs) {
   try { fs.writeFileSync(BINANCE_BAN_FILE, String(untilMs)); } catch (e) {}
 }
 
+function clearBinanceBan() {
+  try { fs.unlinkSync(BINANCE_BAN_FILE); } catch (e) {}
+}
+
 // ─── 妖币扫描: Binance OI ──────────────────────────────────
 async function fetchWithTimeout(url, opts = {}) {
   const controller = new AbortController();
@@ -367,7 +372,8 @@ async function fetchOpenInterest(symbols) {
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(OI_CONCURRENCY, symbols.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(5, symbols.length) }, worker));
+  // Binance 权重限流：OI 权重=1，718 币 ≈ 718 权重；5 并发 × 200ms ≈ 25 req/s ≈ 1500/min，安全
   return results;
 }
 
@@ -429,7 +435,7 @@ async function relayDemon(binanceRows, agg, sharedOiMap) {
 
 // ─── 小币筛选: Binance 资金费率 / 盘口深度 / 上线时间 ──────────
 const DEPTH_CONCURRENCY = 4;
-const DEPTH_DELAY_MS = 150; // 每次请求后延迟 150ms，limit=5 权重=2，679币×2权重/4并发 ≈ 26秒，总 1358权重
+const DEPTH_DELAY_MS = 300; // 每次请求后延迟 300ms，limit=5 权重=2，679币×2权重/4并发 ≈ 51秒，速率 ~800权重/分钟
 const MENTIONED_DEFAULT = 'SIREN,RAVE,STO,LAB,TRADOOR,BSB,ESPORTS,BANK,IDOL,UB,BILL,RIVER,PTB,ACE,SAHARA,VELVET,ALLO,BLUAI,AGT,NOM,PIPPIN,WLFI,RESOLV,USR,INX';
 
 // ─── Coinalyze 补充数据: 多空比 / 清算 / OI历史 / 预测资费 ──────────
