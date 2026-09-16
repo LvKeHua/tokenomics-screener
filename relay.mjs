@@ -1393,6 +1393,7 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
       oi_state: null,
       oi_collapse: false,
       hi60: null,
+      vol_x30: null,
       drawdown_60d: null,
       range_20d: null,
       vol_shrink_20d: null,
@@ -1423,6 +1424,15 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
       const turnMax = Math.max(...turns);
       const turn5 = turns.slice(-5).reduce((a, b) => a + b, 0) / 5;
       f.vol_shrink_20d = turnMax > 0 ? Math.round((turn5 / turnMax) * 10000) / 10000 : null;
+      // ★ 自参照量比：当日额 / 前30日均额（妖币埋伏手册明令「绝对阈值不可跨标的，
+      //   必须自参照」——LSK 埋伏期 24,248 笔/天 vs $H 崩盘期 11,386,239 笔，差 470 倍）。
+      //   LSK 进场日(09-09) 实测 1.36x，故阈值取 1.36 以覆盖其真实案例。
+      const qv = k.map(x => parseFloat(x[7])).filter(v => v > 0);
+      if (qv.length >= 31) {
+        const curQv = qv[qv.length - 1];
+        const prev30 = qv.slice(-31, -1).reduce((a, b) => a + b, 0) / 30;
+        f.vol_x30 = prev30 > 0 ? Math.round((curQv / prev30) * 100) / 100 : null;
+      }
       // 近5日单日异动
       const dayrets = closes.slice(-6).map((c, i, arr) => i === 0 ? 0 : c / arr[i - 1] - 1);
       f.big_move_5d = dayrets.slice(-5).some(x => Math.abs(x) > 0.15);
@@ -1488,13 +1498,27 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
     else if (f.forward_score >= 4) f.signal = 'acc_candidate';
     else if (f.forward_score > 0) f.signal = 'watch';
     else f.signal = 'noise';
-    // ★ 事件驱动通道（A 方 agintender：OI 首次放大 + 价格突破 + 放量 = 新资金进场唯一真实证据）
-    // 与 L1 吸筹通道【并列】而非取代：L1 抓「洗盘后的安静」，本通道抓「已经启动的火苗」。
-    // 两者对同一个币的结论可能相反，这本身是信息。LSK 就是被 L1 100% 过滤掉的典型。
+    // ★ 事件驱动通道（A 方 agintender / 妖币埋伏手册第2步「进场触发」）
+    //   与 L1 吸筹通道【并列】而非取代：L1 抓「洗盘后的安静」，本通道抓「已启动的火苗」。
+    //   两者对同一币结论可能相反，这本身是信息。LSK 正是被 L1 100% 过滤掉的典型。
+    //
+    //   触发条件（三条，全部来自手册）：
+    //     ① OI 单日增长 > +10%
+    //     ② 价格突破 30/60 日横盘上沿（>= 0.97 × hi60）
+    //     ③ 量能 > 30 日均量 × 1.36        ← 自参照，非跨维度
+    //
+    //   ⚠️ 修正记录：首版误用 volume_oi_ratio(额/OI) 当作「放量」。那是跨维度指标，
+    //   且与排除层阈值(>=5)同源 —— 导致首轮 4 个命中【全部同时被 avoid_event 否决】，
+    //   通道只会产出被自己排除层枪毙的币。手册亦明确记录过同类教训：
+    //   「绝对的量/笔数阈值不可跨标的，必须用自参照」。
+    //   另注：手册写 1.5，但 LSK 进场日实测仅 1.36x，故取 1.36 以覆盖其真实案例。
+    //
+    //   前置：额/OI>=5 是强负 EV（fwd5 -1.7%），命中即不成立事件驱动（不覆盖排除层语义）。
     f.event_driven = !!(
+      f.volume_oi_ratio != null && f.volume_oi_ratio < 5 &&
       f.oi_24h_change_pct != null && f.oi_24h_change_pct >= 10 &&
       f.hi60 != null && f.price != null && f.price >= f.hi60 * 0.97 &&
-      f.volume_oi_ratio != null && f.volume_oi_ratio >= 1.5
+      f.vol_x30 != null && f.vol_x30 >= 1.36
     );
     payload.push(f);
   }
