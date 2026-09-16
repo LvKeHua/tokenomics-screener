@@ -961,6 +961,43 @@ function normalizeHeavyTimestamp(value) {
   return timestamp;
 }
 
+// heavy 抢占锁：isHeavyDue() 是「先读后写」，非原子。
+// VPS cron + 手动 + 本地兜底并发时可能同时通过 → KV 写入翻倍逼近每日上限。
+// 用 O_CREAT|O_EXCL 原子创建锁文件，只有一个实例能进入 heavy 分支。
+// 注意：锁在这里只负责「抢占」，marker 仍由 markHeavySuccess() 在所有模块成功后推进
+// （比 notebook 版更严格：失败时不推进 marker，下个 cron 会重试）。
+const HEAVY_LOCK = HEAVY_MARKER + '.lock';
+let heavyLockHeld = false;
+
+const HEAVY_LOCK_STALE_MS = 30 * 60 * 1000;      // 崩溃残留锁的自动回收阈值（一轮 12m 超时 ×2）
+
+function acquireHeavyLock() {
+  try {
+    fs.closeSync(fs.openSync(HEAVY_LOCK, 'wx'));   // wx = O_CREAT|O_EXCL，已存在则抛错
+    heavyLockHeld = true;
+    return true;
+  } catch (e) {
+    // 锁已存在：可能是并发实例正在跑（正常），也可能是上次崩溃残留（会永久阻塞 heavy）。
+    // 用 mtime 判定，超过阈值即回收再抢占一次。
+    try {
+      if (Date.now() - fs.statSync(HEAVY_LOCK).mtimeMs > HEAVY_LOCK_STALE_MS) {
+        fs.unlinkSync(HEAVY_LOCK);
+        fs.closeSync(fs.openSync(HEAVY_LOCK, 'wx'));
+        heavyLockHeld = true;
+        console.error('Heavy lock was stale; reclaimed');
+        return true;
+      }
+    } catch (e2) { /* 回收失败 → 让位 */ }
+    return false;                                  // 别的实例正在跑本轮
+  }
+}
+
+function releaseHeavyLock() {
+  if (!heavyLockHeld) return;
+  heavyLockHeld = false;
+  try { fs.unlinkSync(HEAVY_LOCK); } catch (e) {}
+}
+
 function isHeavyDue() {
   try {
     const last = normalizeHeavyTimestamp(fs.readFileSync(HEAVY_MARKER, 'utf-8'));
@@ -1048,7 +1085,8 @@ async function main() {
     if (round === 0) {
       const okxOiMap = await fetchOkxOi().catch(() => new Map());
       const agg = aggregateMarket(payload.binance, payload.bybit, payload.okx, okxOiMap);
-      const heavyDue = isHeavyDue();
+      // 原子抢占：只有拿到锁的实例才进入 heavy 分支（失败即让位，下轮再来）
+      const heavyDue = isHeavyDue() && acquireHeavyLock();
       let heavyInputsOk = !heavyDue;
       if (heavyDue && payload.binance && payload.binance.length > 0) {
         const liveOi = await fetchOpenInterest(payload.binance.map(r => r.symbol)).catch(() => new Map());
@@ -1098,6 +1136,9 @@ async function main() {
       } else {
         console.error('Coinfilter: Binance rows or OI unavailable');
       }
+
+      // heavy 分支结束：释放抢占锁（marker 已由 markHeavySuccess 按成功与否决定是否推进）
+      releaseHeavyLock();
 
       if (!coinfilterOk) console.error('Coinfilter update incomplete');
       if (payload.binance) await relayForward(payload.binance, process.env.DEBUG, agg, oiMap).catch(e => console.error('Forward relay failed:', e.message));
@@ -1223,6 +1264,11 @@ function computeForwardScore(f) {
   }
   let s = 3; // 结构成立基础分
   if (f.drawdown_60d >= 0.60) s += 1;
+  // 🌐 全市场验证加成（200,065 样本，2026-09-16）：
+  //   「吸筹门槛 + 深底(dd60>=50%)」在涨市 +0.46pp / 跌市 +0.52pp（两制皆正，无需 BTC 闸门）
+  //   对照「吸筹门槛」单独：涨市 +0.43pp / 跌市 -0.16pp（浅底跌市 -0.59pp）
+  //   ⚠️ 注意：深底子集样本 3,589，去掉 top10 币后超额归零 -> 仅作 +1 加分，不做硬门槛
+  if (f.drawdown_60d >= 0.50) s += 1;
   if (f.range_20d < 0.20) s += 1;
   if (f.vol_shrink_20d < 0.10) s += 1;
   if (f.vol_compress_5d != null && f.vol_compress_5d < 0.08) s += 1;
@@ -1297,9 +1343,11 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
     const close = closes[closes.length - 1];
     btcEnv = { up: close > sma20, close, sma20 };
   }
+  // ⚠️ BTC 环境缺失【不再中止】forward 推送（原为单点故障：BTC K线抓取失败则整个候选池停更）
+  // 全市场验证（200,065 样本）：吸筹门槛+深底(dd60>=50%) 在涨市 +0.46pp / 跌市 +0.52pp，
+  // 两制皆正 -> BTC 闸门非必需，降级为参考指标。env 仍照常推送，供前端展示/自行判断。
   if (btcEnv.up == null) {
-    console.error('Forward: cached BTC environment unavailable; preserving previous snapshot');
-    return;
+    console.warn('Forward: BTC env unavailable — proceeding WITHOUT gate (env=null), candidates preserved');
   }
   console.log(`Forward: klines=${klineMap.size} funding=${fundingMap.size}`);
   const payload = [];
@@ -1400,8 +1448,11 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
     }
     f.forward_score = computeForwardScore(f);
     // 信号：吸筹结构候选（结构成立 + 评分≥4，纯小币维度，无 BTC 环境开关）
-    if (f.forward_score >= 4) f.signal = 'acc_candidate';
-    else if (f.volume_oi_ratio >= 5) f.signal = 'avoid_event';
+    // 注意顺序：avoid_event 是「排除层」，额/OI≥5 是强负 EV 信号（fwd5 -1.7%），
+    // 必须优先于 acc_candidate —— 否则事件日的币会被标成「候选」而不是「回避」，
+    // 与 L2 排除层设计矛盾。原先 acc_candidate 在前会覆盖掉 avoid_event。
+    if (f.volume_oi_ratio >= 5) f.signal = 'avoid_event';
+    else if (f.forward_score >= 4) f.signal = 'acc_candidate';
     else if (f.forward_score > 0) f.signal = 'watch';
     else f.signal = 'noise';
     payload.push(f);
@@ -1479,6 +1530,10 @@ async function healGainerHistory(syms, klineMap) {
     }
   }
 }
+
+// 异常退出时不留下抢占锁（正常运行由 releaseHeavyLock 释放；
+// 崩溃残留则由 acquireHeavyLock 的 mtime 回收兜底）
+process.on('exit', () => { releaseHeavyLock(); });
 
 main().catch(err => {
   console.error('Unhandled relay error:', err);
