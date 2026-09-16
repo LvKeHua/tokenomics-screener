@@ -1161,8 +1161,10 @@ const FORWARD_URL = process.env.FORWARD_URL || (DEMON_URL ? DEMON_URL.replace('/
 const FORWARD_RELAY_KEY = process.env.DEMON_RELAY_KEY;
 const FORWARD_KLINES_CONCURRENCY = 12;
 const FORWARD_KLINES_LIMIT = 100;   // 100 天日线：60天回撤 + 横盘宽度 + 缩量 + 波动
-const FORWARD_OIH_CONCURRENCY = 4;
-const FORWARD_OIH_DELAY_MS = 300;   // openInterestHist 权重10/请求，4并发×0.3s≈133权重/s
+// 全市场 718 币都要拿 OI 历史：openInterestHist(limit<=30) 权重=1，
+// 718 权重 / 15并发 ≈ 5s，远低于已有 kline(权重10)/depth(权重2) 的量级。
+const FORWARD_OIH_CONCURRENCY = 15;
+const FORWARD_OIH_DELAY_MS = 60;
 
 // 市场环境开关：BTC 20日均线方向（验证：环境决定蓄水信号是否有效）
 async function fetchBtcEnv() {
@@ -1209,8 +1211,10 @@ async function fetchOiHistory(symbols) {
       if (Date.now() - started > 120000) return;
       const sym = symbols[idx++];
       try {
-        const h = await fetchBinanceApi(`/futures/data/openInterestHist?symbol=${sym}&period=1d&limit=31`);
-        if (Array.isArray(h) && h.length >= 10) results.set(sym, h);
+        // 1h×25：既算 24h 变化（末点 vs 24h 前）又保留 30 日分位能力。
+        // 原 period=1d 只能给分位，且返回值从未被消费（oiHistMap 一直是空的死代码）。
+        const h = await fetchBinanceApi(`/futures/data/openInterestHist?symbol=${sym}&period=1h&limit=25`);
+        if (Array.isArray(h) && h.length >= 6) results.set(sym, h);
       } catch (e) { /* skip */ }
       await new Promise(r => setTimeout(r, FORWARD_OIH_DELAY_MS));
     }
@@ -1328,7 +1332,12 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
     console.error(`Forward: kline coverage ${(klineCoverage * 100).toFixed(1)}% < 50%; preserving previous snapshot`);
     return;
   }
-  const oiHistMap = new Map();
+  // OI 历史（1h×25）：供 oi_24h_change_pct / oi_pctile_30d / OI 三态 / OI 崩塌判定。
+  // 此前 fetchOiHistory 定义了但从未调用 —— oi_pctile_30d 恒为 null。
+  const oiHistMap = await fetchOiHistory(syms).catch(e => {
+    console.error('OI history fetch failed:', e.message);
+    return new Map();
+  });
 
   const listingMap = await fetchListingDates();
   const cachedFunding = loadMapCache('funding.json', 3 * 60 * 60 * 1000);
@@ -1380,6 +1389,10 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
       btc_close: null,
       btc_sma20: null,
       oi_pctile_30d: null,
+      oi_24h_change_pct: null,
+      oi_state: null,
+      oi_collapse: false,
+      hi60: null,
       drawdown_60d: null,
       range_20d: null,
       vol_shrink_20d: null,
@@ -1397,6 +1410,8 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
       const closes = k.map(x => parseFloat(x[4]));
       const hi60 = Math.max(...closes.slice(-60));
       const cur = closes[closes.length - 1];
+      // hi60 原样保留：事件驱动通道要判断「价格突破 30/60 日横盘上沿」（A 方进场触发条件）
+      f.hi60 = hi60;
       f.drawdown_60d = hi60 > 0 ? Math.round((1 - cur / hi60) * 10000) / 10000 : null;
       // 横盘宽度：近20日收盘区间 (max-min)/min
       const win20 = closes.slice(-20);
@@ -1439,12 +1454,30 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
         }
       }
     }
-    if (h && h.length >= 10) {
+    if (h && h.length >= 6) {
       const oiUsdSeries = h.map(x => parseFloat(x.sumOpenInterestValue)).filter(v => v > 0);
-      if (oiUsdSeries.length >= 10) {
+      if (oiUsdSeries.length >= 6) {
         const cur = oiUsdSeries[oiUsdSeries.length - 1];
+        const prev24 = oiUsdSeries[Math.max(0, oiUsdSeries.length - 25)];
+        if (prev24 > 0) {
+          f.oi_24h_change_pct = Math.round((cur / prev24 - 1) * 10000) / 100;
+        }
+        // OI 分位：24 小时粒度采样（1h×25 直接取每点即可近似）
         f.oi_pctile_30d = Math.round((oiUsdSeries.filter(v => v <= cur).length / oiUsdSeries.length) * 10000) / 10000;
+        // ★ OI 崩塌：24h 内 OI 腰斩 = 仓位被真实平掉（妖币埋伏手册唯一硬离场判据：LSK 09-13 −62.3%）
+        // 价格可在顶部反复假突破，OI 崩塌不会骗人。
+        f.oi_collapse = f.oi_24h_change_pct != null && f.oi_24h_change_pct <= -50;
       }
+    }
+    // ★ OI 三态（数据指标篇：OI 的三种状态）—— OI 方向 × 价格方向
+    //   oi_up_price_up   正常拉升：多头市价吃单，需求>供给（风险最低）
+    //   oi_up_price_down MM 堆空：可能是烟雾弹，也可能是真实做空
+    //   oi_down_price_up 去杠杆：庄家平多、散户追多接盘（危险信号）
+    //   oi_down_price_down 双向平仓：趋势衰减 / 崩塌
+    if (f.oi_24h_change_pct != null && f.change_24h_pct != null) {
+      const oiUp = f.oi_24h_change_pct > 0, pxUp = f.change_24h_pct > 0;
+      f.oi_state = oiUp ? (pxUp ? 'oi_up_price_up' : 'oi_up_price_down')
+                        : (pxUp ? 'oi_down_price_up' : 'oi_down_price_down');
     }
     f.forward_score = computeForwardScore(f);
     // 信号：吸筹结构候选（结构成立 + 评分≥4，纯小币维度，无 BTC 环境开关）
@@ -1455,6 +1488,14 @@ async function relayForward(binanceRows, debug, agg, sharedOiMap) {
     else if (f.forward_score >= 4) f.signal = 'acc_candidate';
     else if (f.forward_score > 0) f.signal = 'watch';
     else f.signal = 'noise';
+    // ★ 事件驱动通道（A 方 agintender：OI 首次放大 + 价格突破 + 放量 = 新资金进场唯一真实证据）
+    // 与 L1 吸筹通道【并列】而非取代：L1 抓「洗盘后的安静」，本通道抓「已经启动的火苗」。
+    // 两者对同一个币的结论可能相反，这本身是信息。LSK 就是被 L1 100% 过滤掉的典型。
+    f.event_driven = !!(
+      f.oi_24h_change_pct != null && f.oi_24h_change_pct >= 10 &&
+      f.hi60 != null && f.price != null && f.price >= f.hi60 * 0.97 &&
+      f.volume_oi_ratio != null && f.volume_oi_ratio >= 1.5
+    );
     payload.push(f);
   }
   if (payload.length === 0) { console.log('Forward: no payload, skip'); return; }
